@@ -7,7 +7,7 @@
 #include <string.h>
 #include <math.h>
 
-const int nx = 65, ny = 65, nt = 100, ns = 3, nf = 3;
+const int nx = 1025, ny = 1025, nt = 100, ns = 3, nf = 3;
 const int mx = nf * nx, my = nf * ny;
 
 const double reynolds = 200., mach = 0.2, prandtl = 0.7;
@@ -28,14 +28,16 @@ const double deltaY = yLength / ny;
 const double CFL = 0.25;
 const double deltaT = CFL * deltaX;
 
-const double dx_const = 1 / (2 * deltaX);
-__constant__ double derix_const;
+// Derivative stencil constants
+const double d_consts[] = { 1 / (2 * deltaX) , 1 / (2 * deltaY) };
+__constant__ double deriv_consts[2];
 
 void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
-
 void HandleError(cudaError);
+void AllocateGpuMemory(double* [], double** [], const int);
 
-__global__ void Derix(double*, double*);
+__global__ void Derix(const double*, double*);
+__global__ void Deriy(const double*, double*);
 
 int main()
 {
@@ -58,47 +60,13 @@ int main()
     double** gpuVariables[numOfVariables] = { &gpu_cylinderMask, &gpu_uVelocity, &gpu_vVelocity, &gpu_temp, &gpu_energy, &gpu_rho, &gpu_pressure, &gpu_rou, &gpu_rov, &gpu_roe, &gpu_scp };
 
     InitialiseArrays(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
+    AllocateGpuMemory(hostVariables, gpuVariables, numOfVariables);
 
-    double* sol = new double[nx * ny];
+    //Derix << < dim3(1, ny), 256 >> > (gpu_uVelocity, gpu_temp);
+    //Deriy << < dim3(nx, 1), 256 >> > (gpu_uVelocity, gpu_temp);
 
-    for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx; i++) {
-            uVelocity[i * ny + j] = sin(2 * i * deltaX + j * deltaY);
-            sol[i * ny + j] = 2 * cos(2 * i * deltaX + j * deltaY);
-        }
-    }
+    HandleError(cudaMemcpy(temp, gpu_temp, sizeof(temp), cudaMemcpyDeviceToHost));
 
-
-    // Allocate gpu memory and copy data from host arrays
-    int bytes = nx * ny * sizeof(double);
-    for (int i = 0; i < numOfVariables; i++) {
-        HandleError(cudaMalloc((void**)gpuVariables[i], bytes) );
-        HandleError(cudaMemcpy(*gpuVariables[i], hostVariables[i], bytes, cudaMemcpyHostToDevice) );
-    }
-
-    HandleError(cudaMemcpyToSymbol(derix_const, &dx_const, sizeof(double)));
-
-    dim3 grid(1, ny);
-
-    Derix << < grid, 256 >> > (gpu_uVelocity, gpu_temp);
-
-    HandleError(cudaMemcpy(temp, gpu_temp, bytes, cudaMemcpyDeviceToHost));
-
-
-    double error = 0;
-    for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx; i++) {
-            double s = sol[i * ny + j];
-            double f = temp[i * ny + j];
-            printf("%f \t %f \n", s, f);
-            error += (s - f) * (s - f);
-        }
-        break;
-    }
-
-    error = sqrt(error / nx / ny);
-
-    printf("RMS error: %e\n", error);
 
     // Free memory on both host and device
     for (int i = 0; i < numOfVariables; i++) {
@@ -117,9 +85,9 @@ void InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity
     double dx, dy, radSquared = cylinderD * cylinderD / 4;
     double pressInf = rhoInf * tempInf * heatCapacityP * (gamma - 1) / gamma;
 
-    for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx; i++) {
-            idx = i * ny + j;
+    for (int j = 0; j < nx; j++) {
+        for (int i = 0; i < ny; i++) {
+            idx = j * ny + i;
 
             // Masks covers points inside circle
             dx = i * deltaX - xLength / 2;
@@ -146,6 +114,19 @@ void InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity
     }
 }
 
+void AllocateGpuMemory(double* hostVariableList[], double** gpuVariableList[], const int length) {
+
+    // Allocate gpu memory and copy data from host arrays
+    int bytes = nx * ny * sizeof(double);
+    for (int i = 0; i < length; i++) {
+        HandleError(cudaMalloc((void**)gpuVariableList[i], bytes));
+        HandleError(cudaMemcpy(*gpuVariableList[i], hostVariableList[i], bytes, cudaMemcpyHostToDevice));
+    }
+
+    // Allocate constant gpu memory
+    HandleError(cudaMemcpyToSymbol(deriv_consts, d_consts, 2 * sizeof(double)));
+}
+
 void HandleError(cudaError error) {
 
     if (error != cudaSuccess) {
@@ -155,34 +136,66 @@ void HandleError(cudaError error) {
     }
 }
 
-__global__ void Derix(double* f, double* deriv_f) {
+__global__ void Derix(const double* f, double* deriv_f) {
 
     __shared__ double row_f[nx + 2];
 
     int thrdsPerBlock = blockDim.x;
-    int global_tid = ny * threadIdx.x + blockIdx.y;
-    int local_tid = threadIdx.x + 1;
+    int global_tid, shrd_mem_idx;
 
     // Copy row of f into shared memory
-    int offset = 0;
-    while (local_tid + offset - 1 < nx) {
-        row_f[local_tid + offset] = f[global_tid + offset * ny];
-        offset += thrdsPerBlock;
+    for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
+        global_tid = ny * blockIdx.y + i;
+        shrd_mem_idx = i + 1;
+        row_f[shrd_mem_idx] = f[global_tid];
     }
 
     __syncthreads();
 
     // Apply periodic boundary conditions
-    if (local_tid == 1) {
+    if (threadIdx.x == 0) {
         row_f[0] = row_f[nx];
         row_f[nx + 1] = row_f[1];
     }
 
     __syncthreads();
 
-    offset = 0;
-    while (local_tid + offset - 1 < nx) {
-        deriv_f[global_tid + offset * ny] = derix_const * (row_f[local_tid + offset + 1] - row_f[local_tid + offset - 1]);
-        offset += thrdsPerBlock;
+    // Calculate derivative using finite difference stencil
+    for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
+        global_tid = ny * blockIdx.y + i;
+        shrd_mem_idx = i + 1;
+        deriv_f[global_tid] = deriv_consts[0] * (row_f[shrd_mem_idx + 1] - row_f[shrd_mem_idx - 1]);
+    }
+}
+
+__global__ void Deriy(const double* f, double* deriv_f) {
+
+    __shared__ double col_f[ny + 2];
+
+    int thrdsPerBlock = blockDim.x;
+    int global_tid, shrd_mem_idx;
+
+    // Copy column of f into shared memory
+    for (int i = threadIdx.x; i < ny; i += thrdsPerBlock) {
+        global_tid = ny * i + blockIdx.x;
+        shrd_mem_idx = i + 1;
+        col_f[shrd_mem_idx] = f[global_tid];
+    }
+
+    __syncthreads();
+
+    // Apply periodic boundary conditions
+    if (threadIdx.x == 0) {
+        col_f[0] = col_f[ny];
+        col_f[ny + 1] = col_f[1];
+    }
+
+    __syncthreads();
+
+    // Calculate derivative using finite difference stencil
+    for (int i = threadIdx.x; i < ny; i += thrdsPerBlock) {
+        global_tid = ny * i + blockIdx.x;
+        shrd_mem_idx = i + 1;
+        deriv_f[global_tid] = deriv_consts[1] * (col_f[shrd_mem_idx + 1] - col_f[shrd_mem_idx - 1]);
     }
 }
