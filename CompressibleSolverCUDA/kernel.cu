@@ -29,15 +29,18 @@ const double CFL = 0.25;
 const double deltaT = CFL * deltaX;
 
 // Derivative stencil constants
-const double d_consts[] = { 1 / (2 * deltaX) , 1 / (2 * deltaY) };
-__constant__ double deriv_consts[2];
+const double d_consts[] = { 1 / (2 * deltaX) , 1 / (2 * deltaY), 1 / deltaX / deltaX, 1 / deltaY / deltaY };
+__constant__ double deriv_consts[4];
 
 void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
 void HandleError(cudaError);
 void AllocateGpuMemory(double* [], double** [], const int);
 
+template<int>
 __global__ void Derix(const double*, double*);
+template<int>
 __global__ void Deriy(const double*, double*);
+__global__ void Average(const double*, double*);
 
 int main()
 {
@@ -60,13 +63,31 @@ int main()
     double** gpuVariables[numOfVariables] = { &gpu_cylinderMask, &gpu_uVelocity, &gpu_vVelocity, &gpu_temp, &gpu_energy, &gpu_rho, &gpu_pressure, &gpu_rou, &gpu_rov, &gpu_roe, &gpu_scp };
 
     InitialiseArrays(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
+
+    double* sol = new double[nx * ny];
+    for (int j = 0; j < nx; j++) {
+        for (int i = 0; i < ny; i++) {
+            int idx = j * ny + i;
+            uVelocity[idx] = sin(2 * i * deltaX + j * deltaY);
+            sol[idx] = -1 * sin(2 * i * deltaX + j * deltaY);
+        }
+    }
+
     AllocateGpuMemory(hostVariables, gpuVariables, numOfVariables);
 
-    //Derix << < dim3(1, ny), 256 >> > (gpu_uVelocity, gpu_temp);
-    //Deriy << < dim3(nx, 1), 256 >> > (gpu_uVelocity, gpu_temp);
+    //Derix <2> << < dim3(1, ny), 256 >> > (gpu_uVelocity, gpu_temp);
+    //Deriy <2> << < dim3(nx, 1), 256 >> > (gpu_uVelocity, gpu_temp);
+    //Average << < 1, 128 >> > (gpu_uVelocity, gpu_avg);
+    
+    //HandleError(cudaMemcpy(temp, gpu_temp, nx * ny * sizeof(double), cudaMemcpyDeviceToHost));
 
-    HandleError(cudaMemcpy(temp, gpu_temp, sizeof(temp), cudaMemcpyDeviceToHost));
+    /*for (int j = 0; j < nx; j++) {
+        for (int i = 0; i < ny; i++) {
+            int idx = j * ny + i;
+            printf("Exact: %f \t Approx: %f \n", sol[idx], temp[idx]);
 
+        }
+    }*/
 
     // Free memory on both host and device
     for (int i = 0; i < numOfVariables; i++) {
@@ -124,7 +145,7 @@ void AllocateGpuMemory(double* hostVariableList[], double** gpuVariableList[], c
     }
 
     // Allocate constant gpu memory
-    HandleError(cudaMemcpyToSymbol(deriv_consts, d_consts, 2 * sizeof(double)));
+    HandleError(cudaMemcpyToSymbol(deriv_consts, d_consts, 4 * sizeof(double)));
 }
 
 void HandleError(cudaError error) {
@@ -136,6 +157,37 @@ void HandleError(cudaError error) {
     }
 }
 
+__global__ void Average(const double* array, double* output) {
+
+    __shared__ double shrd_temp[nx];
+
+    double col_sum = 0.0;
+
+    // Store sum of each column in shared memory
+    for (int thrdNum = threadIdx.x; thrdNum < nx; thrdNum += blockDim.x) {
+        for (int i = ny * thrdNum; i < ny * (thrdNum + 1); i++) {
+            col_sum += array[i];
+        }
+
+        shrd_temp[thrdNum] = col_sum;
+        col_sum = 0.0;
+    }
+
+    __syncthreads();
+    
+    if (threadIdx.x == 0) {
+        *output = 0.0;
+        for (int i = 0; i < nx; i++) {
+            *output += shrd_temp[i];
+        }
+
+        *output /= (nx * ny);
+    }
+
+
+}
+
+template<int derivative>
 __global__ void Derix(const double* f, double* deriv_f) {
 
     __shared__ double row_f[nx + 2];
@@ -164,10 +216,22 @@ __global__ void Derix(const double* f, double* deriv_f) {
     for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
         global_tid = ny * blockIdx.y + i;
         shrd_mem_idx = i + 1;
-        deriv_f[global_tid] = deriv_consts[0] * (row_f[shrd_mem_idx + 1] - row_f[shrd_mem_idx - 1]);
+
+        switch (derivative) {
+        case 1:
+            // Case of 1st x derivative
+            deriv_f[global_tid] = deriv_consts[0] * (row_f[shrd_mem_idx + 1] - row_f[shrd_mem_idx - 1]);
+            break;
+
+        case 2:
+            // Case of 2nd x derivative
+            deriv_f[global_tid] = deriv_consts[2] * (row_f[shrd_mem_idx + 1] - 2 * row_f[shrd_mem_idx] + row_f[shrd_mem_idx - 1]);
+            break;
+        }
     }
 }
 
+template<int derivative>
 __global__ void Deriy(const double* f, double* deriv_f) {
 
     __shared__ double col_f[ny + 2];
@@ -196,6 +260,17 @@ __global__ void Deriy(const double* f, double* deriv_f) {
     for (int i = threadIdx.x; i < ny; i += thrdsPerBlock) {
         global_tid = ny * i + blockIdx.x;
         shrd_mem_idx = i + 1;
-        deriv_f[global_tid] = deriv_consts[1] * (col_f[shrd_mem_idx + 1] - col_f[shrd_mem_idx - 1]);
+
+        switch (derivative) {
+        case 1:
+            // Case of 1st y derivative
+            deriv_f[global_tid] = deriv_consts[1] * (col_f[shrd_mem_idx + 1] - col_f[shrd_mem_idx - 1]);
+            break;
+
+        case 2:
+            // Case of 2nd y derivative
+            deriv_f[global_tid] = deriv_consts[3] * (col_f[shrd_mem_idx + 1] - 2 * col_f[shrd_mem_idx] + col_f[shrd_mem_idx - 1]);
+            break;
+        }
     }
 }
