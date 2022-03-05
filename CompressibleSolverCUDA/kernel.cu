@@ -1,25 +1,25 @@
 ﻿#define PI 3.14159265359
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include "cublas_v2.h"
+#include <iostream>
 
 const int nx = 129, ny = nx, nt = 100, ns = 3, nf = 3;
 const int mx = ns * nx, my = nf * ny;
 
 const double reynolds = 200., mach = 0.2, prandtl = 0.7;
-const double rhoInf = 1., cInf = 1., cylinderD = 1., heatCapacityP = 1., gamma = 1.4;
+const double rhoInf = 1., cInf = 1., cylinderD = 1., heatCapacityP = 1., heatRatio = 1.4;
 
-const double heatCapacityV = heatCapacityP / gamma;
+const double heatCapacityV = heatCapacityP / heatRatio;
 const double uInf = mach * cInf;
 const double dynViscosity = rhoInf * uInf * cylinderD / reynolds;
 // thermal conductivity
 const double lambda = dynViscosity * heatCapacityP / prandtl;
-const double tempInf = cInf * cInf / (heatCapacityP * (gamma - 1.));
+const double tempInf = cInf * cInf / (heatCapacityP * (heatRatio - 1.));
 const double eta = 0.1 / 2.;
 const double oneOverEta = 1. / eta;
 const double xkt = lambda / (heatCapacityP * rhoInf);
@@ -34,7 +34,7 @@ const double deltaT = CFL * deltaX;
 // Derivative stencil constants
 const double d_consts[] = { 1. / (2. * deltaX) , 1. / (2. * deltaY), 1. / deltaX / deltaX, 1. / deltaY / deltaY };
 const double a_consts[] = { 1.5 * deltaT, 0.5 * deltaT };
-const double e_consts[] = { gamma - 1., gamma / (gamma - 1.) / heatCapacityP };
+const double e_consts[] = { heatRatio - 1., heatRatio / (heatRatio - 1.) / heatCapacityP };
 
 __constant__ double deriv_consts[4];
 __constant__ double adams_consts[2];
@@ -133,6 +133,7 @@ int main()
     
     printf("The time step of the simulation is %.9E \n", deltaT);
     printf("Average values at t=");
+    std::cout.flush();
     PrintAverages(0, gpu_uVelocity, gpu_vVelocity, gpu_scp, gpu_averages, averages);
 
     for (int i = 1; i <= nt; i++) {
@@ -189,7 +190,7 @@ void InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity
     int idx;
     double dx, dy;
     const double radSquared = cylinderD * cylinderD / 4.;
-    const double pressInf = rhoInf * tempInf * heatCapacityP * (gamma - 1.) / gamma;
+    const double pressInf = rhoInf * tempInf * heatCapacityP * (heatRatio - 1.) / heatRatio;
 
     for (int j = 0; j < nx; j++) {
         for (int i = 0; i < ny; i++) {
@@ -544,5 +545,5 @@ __global__ void Etatt(const double* rho, const double* rou, const double* rov, c
 }
 
 __global__ void PrintAveragesGpu(const int timestep, const double* averages) {
-    printf("%5i %.9G %.9E %.9G \n", timestep, averages[0], averages[1], averages[2]);
+    printf("%i %.9G %.9E %.9G \n", timestep, averages[0], averages[1], averages[2]);
 }
