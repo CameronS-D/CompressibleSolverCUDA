@@ -8,8 +8,8 @@
 #include <math.h>
 #include "cublas_v2.h"
 
-const int nx = 2049, ny = 2049, nt = 100, ns = 3, nf = 3;
-const int mx = nf * nx, my = nf * ny;
+const int nx = 129, ny = nx, nt = 100, ns = 3, nf = 3;
+const int mx = ns * nx, my = nf * ny;
 
 const double reynolds = 200., mach = 0.2, prandtl = 0.7;
 const double rhoInf = 1., cInf = 1., cylinderD = 1., heatCapacityP = 1., gamma = 1.4;
@@ -32,9 +32,9 @@ const double CFL = 0.025;
 const double deltaT = CFL * deltaX;
 
 // Derivative stencil constants
-const double d_consts[] = { 1 / (2 * deltaX) , 1 / (2 * deltaY), 1 / deltaX / deltaX, 1 / deltaY / deltaY };
+const double d_consts[] = { 1. / (2. * deltaX) , 1. / (2. * deltaY), 1. / deltaX / deltaX, 1. / deltaY / deltaY };
 const double a_consts[] = { 1.5 * deltaT, 0.5 * deltaT };
-const double e_consts[] = { gamma - 1, heatCapacityP * gamma / (gamma - 1) };
+const double e_consts[] = { gamma - 1., gamma / (gamma - 1.) / heatCapacityP };
 
 __constant__ double deriv_consts[4];
 __constant__ double adams_consts[2];
@@ -131,13 +131,15 @@ int main()
     InitialiseArrays(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
     AllocateGpuMemory(hostVariables, gpuVariables, numOfVariables, bytes);
     
+    printf("The time step of the simulation is %.9E \n", deltaT);
+    printf("Average values at t=");
     PrintAverages(0, gpu_uVelocity, gpu_vVelocity, gpu_scp, gpu_averages, averages);
 
     for (int i = 1; i <= nt; i++) {
         Fluxx(gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_temp, gpu_energy, gpu_rho, gpu_pressure, gpu_rou, gpu_rov, gpu_roe, gpu_scp,
             tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8, tb9, tba, tbb, fro, fru, frv, fre, ftp);
-        //PrintAverages(i, fre, prev_fre, gpu_roe, gpu_averages, averages);
-        Adams << < nx * ny / 256 + 1, 256 >> > (fro, prev_fro, gpu_rho);
+  
+        Adams << < ceil(nx * ny / 256) + 1, 256 >> > (fro, prev_fro, gpu_rho);
         Adams << < ceil(nx * ny / 256) + 1, 256 >> > (fru, prev_fru, gpu_rou);
         Adams << < ceil(nx * ny / 256) + 1, 256 >> > (frv, prev_frv, gpu_rov);
         Adams << < ceil(nx * ny / 256) + 1, 256 >> > (fre, prev_fre, gpu_roe);
@@ -187,7 +189,7 @@ void InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity
     int idx;
     double dx, dy;
     const double radSquared = cylinderD * cylinderD / 4.;
-    const double pressInf = rhoInf * tempInf * heatCapacityP * (gamma - 1) / gamma;
+    const double pressInf = rhoInf * tempInf * heatCapacityP * (gamma - 1.) / gamma;
 
     for (int j = 0; j < nx; j++) {
         for (int i = 0; i < ny; i++) {
@@ -202,13 +204,12 @@ void InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity
 
             uVelocity[idx] = uInf;
             // Add small velocity perturbation
-            vVelocity[idx] = 0.01 * (sin(4 * PI * i * deltaX / xLength)
-                + sin(7 * PI * i * deltaX / xLength))
-                * exp(-(j * deltaY - yLength / 2) * (j * deltaY - yLength / 2));
+            vVelocity[idx] = 0.01 * (sin(4. * PI * (double)i * deltaX / xLength)
+                + sin(7. * PI * (double)i * deltaX / xLength))
+                * exp(-((double)j * deltaY - yLength / 2.) * ((double)j * deltaY - yLength / 2.));
             temp[idx] = tempInf;
             pressure[idx] = pressInf;
-            energy[idx] = heatCapacityV * tempInf
-                + 0.5 * (uInf * uInf + vVelocity[idx] * vVelocity[idx]);
+            energy[idx] = heatCapacityV * tempInf + 0.5 * (uInf * uInf + vVelocity[idx] * vVelocity[idx]);
             rho[idx] = rhoInf;
             rou[idx] = rhoInf * uInf;
             rov[idx] = rhoInf * vVelocity[idx];
@@ -248,8 +249,6 @@ void PrintAverages(const int timestep, const double* gpu_uVelocity, const double
     Average << < 1, 256 >> > (gpu_vVelocity, &gpu_averages[1]);
     Average << < 1, 256 >> > (gpu_scp, &gpu_averages[2]);
 
-    //HandleError(cudaMemcpy(averages, gpu_averages, 3 * sizeof(double), cudaMemcpyDeviceToHost));
-    //printf("%i %f %f %f \n", timestep, averages[0], averages[1], averages[2]);
     PrintAveragesGpu<<<1, 1>>>(timestep, gpu_averages);
 }
 
@@ -274,6 +273,7 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     SubFluxx2 << < ceil(nx * ny / 256) + 1, 256 >> > (dynViscosity, oneOverEta, tb3, tb4, tb5, tb6, tb7, tb9,
         gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_rou, gpu_rov, tb1, tb2, tba, fru);
 
+    Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_pressure, tb3);
     Derix<1> << < dim3(1, ny), 256 >> > (tb1, tb4);
     Deriy<1> << < dim3(nx, 1), 256 >> > (tb2, tb5);
     Derix<2> << < dim3(1, ny), 256 >> > (gpu_vVelocity, tb6);
@@ -295,8 +295,8 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
 
     Derix<1> << < dim3(1, ny), 256 >> > (gpu_uVelocity, tb1);
     Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_vVelocity, tb2);
-    Derix<1> << < dim3(1, ny), 256 >> > (gpu_vVelocity, tb3);
-    Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_uVelocity, tb4);
+    Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_uVelocity, tb3);
+    Derix<1> << < dim3(1, ny), 256 >> > (gpu_vVelocity, tb4);
 
     SubFluxx5 << < ceil(nx * ny / 256) + 1, 256 >> > (dynViscosity, gpu_uVelocity, gpu_vVelocity, tba, tbb, gpu_pressure, gpu_roe, tb1, tb2, tb3, tb4, fre);
 
@@ -334,7 +334,7 @@ __global__ void Average(const double* array, double* output) {
             *output += shrd_temp[i];
         }
 
-        *output /= (nx * ny);
+        *output /= (double)(nx * ny);
     }
 }
 
@@ -447,7 +447,7 @@ __global__ void SubFluxx2(const double dynViscosity, const double oneOverEta, co
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= nx * ny) { return; }
 
-    const double temp = 1 / 3, temp2 = 4 * temp;
+    const double temp = 1. / 3., temp2 = 4. * temp;
     double cache;
 
     cache = dynViscosity * (temp2 * tb6[idx] + tb7[idx] + temp * tb9[idx]);
@@ -466,7 +466,7 @@ __global__ void SubFluxx3(const double dynViscosity, const double oneOverEta,
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= nx * ny) { return; }
-    const double temp = 1 / 3, temp2 = 4 * temp;
+    const double temp = 1. / 3., temp2 = 4. * temp;
     double cache;
 
     cache = dynViscosity * (tb6[idx] + temp2 * tb7[idx] + temp * tb9[idx]);
@@ -497,8 +497,8 @@ __global__ void SubFluxx5(const double dynViscosity, const double* uVelocity, co
     double locRoe = roe[idx], locPres = pressure[idx];
 
     fre[idx] = dynViscosity * ((velCache[0] * tba[idx] + velCache[1] * tbb[idx])
-        + 2 * (tb[0] * tb[0] + tb[1] * tb[1])
-        - 2 / 3 * (tb[0] + tb[1] * (tb[0] + tb[1]))
+        + 2. * (tb[0] * tb[0] + tb[1] * tb[1])
+        - 2. / 3. * (tb[0] + tb[1]) * (tb[0] + tb[1])
         + (tb[2] + tb[3]) * (tb[2] + tb[3]));
 
     tb1[idx] = locRoe * velCache[0];
@@ -532,7 +532,7 @@ __global__ void Etatt(const double* rho, const double* rou, const double* rov, c
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= nx * ny) { return; }
 
-    double oneOverRho = 1 / rho[idx];
+    double oneOverRho = 1. / rho[idx];
     double roVel[] = { rou[idx], rov[idx] };
     double velocity[] = { oneOverRho * roVel[0], oneOverRho * roVel[1] };
     double pressCache = etatt_consts[0] * (roe[idx] - 0.5 * (roVel[0] * velocity[0] + roVel[1] * velocity[1]));
@@ -544,5 +544,5 @@ __global__ void Etatt(const double* rho, const double* rou, const double* rov, c
 }
 
 __global__ void PrintAveragesGpu(const int timestep, const double* averages) {
-    printf("%i %f %f %f \n", timestep, averages[0], averages[1], averages[2]);
+    printf("%5i %.9G %.9E %.9G \n", timestep, averages[0], averages[1], averages[2]);
 }
