@@ -7,8 +7,11 @@
 #include <math.h>
 #include "cublas_v2.h"
 #include <iostream>
+#include <thrust/device_vector.h>
+#include <thrust/reduce.h>
+#include <thrust/functional.h>
 
-const int nx = 129, ny = nx, nt = 100, ns = 3, nf = 3;
+const int nx = 129, ny = nx, nt = 100, ns = 3, nf = 3, N = nx * ny;
 const int mx = ns * nx, my = nf * ny;
 
 const double reynolds = 200., mach = 0.2, prandtl = 0.7;
@@ -28,6 +31,7 @@ const double xLength = 4. * cylinderD;
 const double yLength = 4. * cylinderD;
 const double deltaX = xLength / (double)nx;
 const double deltaY = yLength / (double)ny;
+const double oneOverN = 1. / (double) N;
 const double CFL = 0.025;
 const double deltaT = CFL * deltaX;
 
@@ -42,8 +46,8 @@ __constant__ double etatt_consts[2];
 
 void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
 void HandleError(cudaError);
-void AllocateGpuMemory(double* [], double** [], const int, const int);
-void PrintAverages(const int, const double*, const double*, const double*, double*, double*);
+void AllocateGpuMemory(double* [], double** [], const int, const unsigned long int);
+void PrintAverages(const int, const double*, const double*, const double*);
 void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocity, double* gpu_temp, double* gpu_energy,
     double* gpu_rho, double* gpu_pressure, double* gpu_rou, double* gpu_rov, double* gpu_roe, double* gpu_scp,
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
@@ -53,7 +57,6 @@ template<int>
 __global__ void Derix(const double*, double*);
 template<int>
 __global__ void Deriy(const double*, double*);
-__global__ void Average(const double*, double*);
 __global__ void SubFluxx1(const double*, const double*, const double*, double*, double*, double*);
 __global__ void SubFluxx2(const double dynViscosity, const double oneOverEta, const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
     const double* cylinderMask, const double* uVelocity, const double* vVelocity, const double* rou, const double* rov,
@@ -72,7 +75,6 @@ __global__ void SubFluxx6(const double lambda, const double* tb5, const double* 
 __global__ void Adams(const double* phi_current, double* phi_previous, double* phi_integral);
 __global__ void Etatt(const double* rho, const double* rou, const double* rov, const double* roe,
     double* uVelocity, double* vVelocity, double* pressure, double* temp);
-__global__ void PrintAveragesGpu(const int timestep, const double* averages);
 
 int main()
 {
@@ -99,7 +101,7 @@ int main()
     double* tba, * tbb, * fro, * fru, * frv, * fre, * ftp;
     double* prev_fro, * prev_fru, * prev_frv, * prev_fre, * prev_ftp;
 
-    const int bytes = nx * ny * sizeof(double);
+    const unsigned long int bytes = nx * ny * sizeof(double);
     HandleError(cudaMalloc(&tb1, bytes));
     HandleError(cudaMalloc(&tb2, bytes));
     HandleError(cudaMalloc(&tb3, bytes));
@@ -134,7 +136,7 @@ int main()
     printf("The time step of the simulation is %.9E \n", deltaT);
     printf("Average values at t=");
     std::cout.flush();
-    PrintAverages(0, gpu_uVelocity, gpu_vVelocity, gpu_scp, gpu_averages, averages);
+    PrintAverages(0, gpu_uVelocity, gpu_vVelocity, gpu_scp);
 
     for (int i = 1; i <= nt; i++) {
         Fluxx(gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_temp, gpu_energy, gpu_rho, gpu_pressure, gpu_rou, gpu_rov, gpu_roe, gpu_scp,
@@ -148,7 +150,7 @@ int main()
 
         Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_rho, gpu_rou, gpu_rov, gpu_roe, gpu_uVelocity, gpu_vVelocity, gpu_pressure, gpu_temp);
 
-        PrintAverages(i, gpu_uVelocity, gpu_vVelocity, gpu_scp, gpu_averages, averages);
+        PrintAverages(i, gpu_uVelocity, gpu_vVelocity, gpu_scp);
     }
 
     // Free memory on both host and device
@@ -220,7 +222,7 @@ void InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity
     }
 }
 
-void AllocateGpuMemory(double* hostVariableList[], double** gpuVariableList[], const int length, const int variableBytes) {
+void AllocateGpuMemory(double* hostVariableList[], double** gpuVariableList[], const int length, const unsigned long int variableBytes) {
 
     // Allocate gpu memory and copy data from host arrays
     for (int i = 0; i < length; i++) {
@@ -243,14 +245,18 @@ void HandleError(cudaError error) {
     }
 }
 
-void PrintAverages(const int timestep, const double* gpu_uVelocity, const double* gpu_vVelocity, const double* gpu_scp,
-    double* gpu_averages, double* averages) {
+void PrintAverages(const int timestep, const double* gpu_uVelocity, const double* gpu_vVelocity, const double* gpu_scp) {
 
-    Average << < 1, 256 >> > (gpu_uVelocity, &gpu_averages[0]);
-    Average << < 1, 256 >> > (gpu_vVelocity, &gpu_averages[1]);
-    Average << < 1, 256 >> > (gpu_scp, &gpu_averages[2]);
+    double mean[3];
+    thrust::device_vector<double> arrayVect;
+    const double* arrays[] = { gpu_uVelocity, gpu_vVelocity, gpu_scp };
 
-    PrintAveragesGpu<<<1, 1>>>(timestep, gpu_averages);
+    for (int i = 0; i < 3; i++) {
+        arrayVect = thrust::device_vector<double>(arrays[i], arrays[i] + N);
+        mean[i] = thrust::reduce(arrayVect.begin(), arrayVect.end(), 0., thrust::plus<double>()) * oneOverN;
+    }   
+
+    printf("%i %.9G %.9E %.9G \n", timestep, mean[0], mean[1], mean[2]);
 }
 
 void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocity, double* gpu_temp, double* gpu_energy, 
@@ -309,34 +315,6 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     Deriy<2> << < dim3(nx, 1), 256 >> > (gpu_temp, tba);
 
     SubFluxx6 << < ceil(nx * ny / 256) + 1, 256 >> > (lambda, tb5, tb6, tb7, tb8, tb9, tba, fre);
-}
-
-__global__ void Average(const double* array, double* output) {
-
-    __shared__ double shrd_temp[nx];
-
-    double col_sum = 0.0;
-
-    // Store sum of each column in shared memory
-    for (int thrdNum = threadIdx.x; thrdNum < nx; thrdNum += blockDim.x) {
-        for (int i = ny * thrdNum; i < ny * (thrdNum + 1); i++) {
-            col_sum += array[i];
-        }
-
-        shrd_temp[thrdNum] = col_sum;
-        col_sum = 0.0;
-    }
-
-    __syncthreads();
-    
-    if (threadIdx.x == 0) {
-        *output = 0.0;
-        for (int i = 0; i < nx; i++) {
-            *output += shrd_temp[i];
-        }
-
-        *output /= (double)(nx * ny);
-    }
 }
 
 template<int derivative>
@@ -542,8 +520,4 @@ __global__ void Etatt(const double* rho, const double* rou, const double* rov, c
     pressure[idx] = pressCache;
     uVelocity[idx] = velocity[0];
     vVelocity[idx] = velocity[1];
-}
-
-__global__ void PrintAveragesGpu(const int timestep, const double* averages) {
-    printf("%i %.9G %.9E %.9G \n", timestep, averages[0], averages[1], averages[2]);
 }
