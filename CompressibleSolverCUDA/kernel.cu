@@ -44,6 +44,14 @@ __constant__ double deriv_consts[4];
 __constant__ double adams_consts[2];
 __constant__ double etatt_consts[2];
 
+// Kernel launch constants for x-derivative
+const unsigned int dx_threads_x = 1024;
+const unsigned int dx_threads_y = 1;
+const unsigned int dx_blocks_x = (unsigned int)ceil((double)nx / dx_threads_x);
+const unsigned int dx_blocks_y = (unsigned int)ceil((double)ny / dx_threads_y);
+const dim3 dx_blockGrid(dx_blocks_x, dx_blocks_y);
+const dim3 dx_threadGrid(dx_threads_x, dx_threads_y);
+
 void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
 void HandleError(cudaError);
 void AllocateGpuMemory(double* [], double** [], const int, const unsigned long int);
@@ -264,54 +272,55 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
     double* tba, double* tbb, double* fro, double* fru, double* frv, double* fre, double* ftp) {
 
-    Derix<1> << < dim3(1, ny), 256 >> > (gpu_rou, tb1);
+    //Derix<1> << < dim3(1, ny), 256 >> > (gpu_rou, tb1);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_rou, tb1);
     Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_rov, tb2);
 
     SubFluxx1 << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_uVelocity, gpu_vVelocity, gpu_rou, fro, tb1, tb2);
 
-    Derix<1> << < dim3(1, ny), 256 >> > (gpu_pressure, tb3);
-    Derix<1> << < dim3(1, ny), 256 >> > (tb1, tb4);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_pressure, tb3);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb4);
     Deriy<1> << < dim3(nx, 1), 256 >> > (tb2, tb5);
-    Derix<2> << < dim3(1, ny), 256 >> > (gpu_uVelocity, tb6);
+    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_uVelocity, tb6);
     Deriy<2> << < dim3(nx, 1), 256 >> > (gpu_uVelocity, tb7);
-    Derix<1> << < dim3(1, ny), 256 >> > (gpu_vVelocity, tb8);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_vVelocity, tb8);
     Deriy<1> << < dim3(nx, 1), 256 >> > (tb8, tb9);
 
     SubFluxx2 << < ceil(nx * ny / 256) + 1, 256 >> > (dynViscosity, oneOverEta, tb3, tb4, tb5, tb6, tb7, tb9,
         gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_rou, gpu_rov, tb1, tb2, tba, fru);
 
     Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_pressure, tb3);
-    Derix<1> << < dim3(1, ny), 256 >> > (tb1, tb4);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb4);
     Deriy<1> << < dim3(nx, 1), 256 >> > (tb2, tb5);
-    Derix<2> << < dim3(1, ny), 256 >> > (gpu_vVelocity, tb6);
+    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_vVelocity, tb6);
     Deriy<2> << < dim3(nx, 1), 256 >> > (gpu_vVelocity, tb7);
-    Derix<1> << < dim3(1, ny), 256 >> > (gpu_uVelocity, tb8);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_uVelocity, tb8);
     Deriy<1> << < dim3(nx, 1), 256 >> > (tb8, tb9);
 
     SubFluxx3 << < ceil(nx * ny / 256) + 1, 256 >> > (dynViscosity, oneOverEta, tb3, tb4, tb5, tb6, tb7, tb9,
         gpu_cylinderMask, gpu_vVelocity, tbb, frv);
 
     // Equation for the tempature
-    Derix<1> << < dim3(1, ny), 256 >> > (gpu_scp, tb1);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_scp, tb1);
     Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_scp, tb2);
-    Derix<2> << < dim3(1, ny), 256 >> > (gpu_scp, tb3);
+    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_scp, tb3);
     Deriy<2> << < dim3(nx, 1), 256 >> > (gpu_scp, tb4);
 
     SubFluxx4 << < ceil(nx * ny / 256) + 1, 256 >> > (oneOverEta, xkt, tb1, tb2, tb3, tb4,
         gpu_uVelocity, gpu_vVelocity, gpu_scp, gpu_cylinderMask, ftp);
 
-    Derix<1> << < dim3(1, ny), 256 >> > (gpu_uVelocity, tb1);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_uVelocity, tb1);
     Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_vVelocity, tb2);
     Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_uVelocity, tb3);
-    Derix<1> << < dim3(1, ny), 256 >> > (gpu_vVelocity, tb4);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_vVelocity, tb4);
 
     SubFluxx5 << < ceil(nx * ny / 256) + 1, 256 >> > (dynViscosity, gpu_uVelocity, gpu_vVelocity, tba, tbb, gpu_pressure, gpu_roe, tb1, tb2, tb3, tb4, fre);
 
-    Derix<1> << < dim3(1, ny), 256 >> > (tb1, tb5);
-    Derix<1> << < dim3(1, ny), 256 >> > (tb2, tb6);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb5);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb2, tb6);
     Deriy<1> << < dim3(nx, 1), 256 >> > (tb3, tb7);
     Deriy<1> << < dim3(nx, 1), 256 >> > (tb4, tb8);
-    Derix<2> << < dim3(1, ny), 256 >> > (gpu_temp, tb9);
+    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_temp, tb9);
     Deriy<2> << < dim3(nx, 1), 256 >> > (gpu_temp, tba);
 
     SubFluxx6 << < ceil(nx * ny / 256) + 1, 256 >> > (lambda, tb5, tb6, tb7, tb8, tb9, tba, fre);
@@ -320,46 +329,101 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
 template<int derivative>
 __global__ void Derix(const double* f, double* deriv_f) {
 
-    __shared__ double row_f[nx + 2];
+    // Local and global arrays use row-major storage
+    int global_i = blockDim.x * blockIdx.x + threadIdx.x;
+    int global_j = blockDim.y * blockIdx.y + threadIdx.y;
+    int global_idx = nx * global_j + global_i;
+    int i = threadIdx.x + 1;
+    int j = threadIdx.y;
+    int local_idx = (blockDim.x + 2) * j + i;
 
-    int thrdsPerBlock = blockDim.x;
-    int global_tid, shrd_mem_idx;
+    if (global_i > nx || global_j >= ny) { return; }
+    if (global_i == nx) { global_idx -= nx; }
 
-    // Copy row of f into shared memory
-    for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
-        global_tid = ny * blockIdx.y + i;
-        shrd_mem_idx = i + 1;
-        row_f[shrd_mem_idx] = f[global_tid];
-    }
+    __shared__ double tile_f[(dx_threads_x + 2) * dx_threads_y];
 
-    __syncthreads();
+    // Copy from global to shared memory
+    tile_f[local_idx] = f[global_idx];
+    if (global_i == nx) { return; }
+
 
     // Apply periodic boundary conditions
     if (threadIdx.x == 0) {
-        row_f[0] = row_f[nx];
-        row_f[nx + 1] = row_f[1];
+        if (global_i == 0) {
+            tile_f[local_idx - 1] = f[global_idx + nx - 1];
+        }
+        else {
+            tile_f[local_idx - 1] = f[global_idx - 1];
+        }
+    }
+ 
+    if (threadIdx.x == blockDim.x - 1) {
+        if (global_i == nx - 1) {
+            tile_f[local_idx + 1] = f[nx * global_j];
+        }
+        else {
+            tile_f[local_idx + 1] = f[global_idx + 1];
+        }
     }
 
     __syncthreads();
 
-    // Calculate derivative using finite difference stencil
-    for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
-        global_tid = ny * blockIdx.y + i;
-        shrd_mem_idx = i + 1;
+    switch (derivative) {
+    case 1:
+        // Case of 1st x derivative
+        deriv_f[global_idx] = deriv_consts[0] * (tile_f[local_idx + 1] - tile_f[local_idx - 1]);
+        break;
 
-        switch (derivative) {
-        case 1:
-            // Case of 1st x derivative
-            deriv_f[global_tid] = deriv_consts[0] * (row_f[shrd_mem_idx + 1] - row_f[shrd_mem_idx - 1]);
-            break;
-
-        case 2:
-            // Case of 2nd x derivative
-            deriv_f[global_tid] = deriv_consts[2] * (row_f[shrd_mem_idx + 1] - 2 * row_f[shrd_mem_idx] + row_f[shrd_mem_idx - 1]);
-            break;
-        }
+    case 2:
+        // Case of 2nd x derivative
+        deriv_f[global_idx] = deriv_consts[2] * (tile_f[local_idx + 1] - 2 * tile_f[local_idx] + tile_f[local_idx - 1]);
+        break;
     }
 }
+
+//template<int derivative>
+//__global__ void Derix(const double* f, double* deriv_f) {
+//
+//    __shared__ double row_f[nx + 2];
+//
+//    int thrdsPerBlock = blockDim.x;
+//    int global_tid, shrd_mem_idx;
+//
+//    // Copy row of f into shared memory
+//    for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
+//        global_tid = ny * blockIdx.y + i;
+//        shrd_mem_idx = i + 1;
+//        row_f[shrd_mem_idx] = f[global_tid];
+//    }
+//
+//    __syncthreads();
+//
+//    // Apply periodic boundary conditions
+//    if (threadIdx.x == 0) {
+//        row_f[0] = row_f[nx];
+//        row_f[nx + 1] = row_f[1];
+//    }
+//
+//    __syncthreads();
+//
+//    // Calculate derivative using finite difference stencil
+//    for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
+//        global_tid = ny * blockIdx.y + i;
+//        shrd_mem_idx = i + 1;
+//
+//        switch (derivative) {
+//        case 1:
+//            // Case of 1st x derivative
+//            deriv_f[global_tid] = deriv_consts[0] * (row_f[shrd_mem_idx + 1] - row_f[shrd_mem_idx - 1]);
+//            break;
+//
+//        case 2:
+//            // Case of 2nd x derivative
+//            deriv_f[global_tid] = deriv_consts[2] * (row_f[shrd_mem_idx + 1] - 2 * row_f[shrd_mem_idx] + row_f[shrd_mem_idx - 1]);
+//            break;
+//        }
+//    }
+//}
 
 template<int derivative>
 __global__ void Deriy(const double* f, double* deriv_f) {
