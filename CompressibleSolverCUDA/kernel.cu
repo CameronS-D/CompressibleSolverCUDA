@@ -142,11 +142,12 @@ int main()
     HandleError(cudaMalloc(&prev_frv, bytes));
     HandleError(cudaMalloc(&prev_fre, bytes));
     HandleError(cudaMalloc(&prev_ftp, bytes));
-    HandleError(cudaMemcpy(prev_fro, cylinderMask, bytes, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpy(prev_fru, cylinderMask, bytes, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpy(prev_frv, cylinderMask, bytes, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpy(prev_fre, cylinderMask, bytes, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpy(prev_ftp, cylinderMask, bytes, cudaMemcpyHostToDevice));
+    HandleError(cudaMemsetAsync(prev_fro, 0.0, bytes));
+    HandleError(cudaMemsetAsync(prev_fru, 0.0, bytes));
+    HandleError(cudaMemsetAsync(prev_frv, 0.0, bytes));
+    HandleError(cudaMemsetAsync(prev_fre, 0.0, bytes));
+    HandleError(cudaMemsetAsync(prev_ftp, 0.0, bytes));
+
     HandleError(cudaMalloc(&gpu_averages, 3 * sizeof(double)));
 
     InitialiseArrays(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
@@ -246,15 +247,15 @@ void AllocateGpuMemory(double* hostVariableList[], double** gpuVariableList[], c
     // Allocate gpu memory and copy data from host arrays
     for (int i = 0; i < length; i++) {
         HandleError(cudaMalloc((void**)gpuVariableList[i], variableBytes));
-        HandleError(cudaMemcpy(*gpuVariableList[i], hostVariableList[i], variableBytes, cudaMemcpyHostToDevice));
+        HandleError(cudaMemcpyAsync(*gpuVariableList[i], hostVariableList[i], variableBytes, cudaMemcpyHostToDevice));
     }
 
     // Allocate constant gpu memory
-    HandleError(cudaMemcpyToSymbol(deriv_consts, d_consts, 4 * sizeof(double)));
-    HandleError(cudaMemcpyToSymbol(adams_consts, a_consts, 2 * sizeof(double)));
-    HandleError(cudaMemcpyToSymbol(etatt_consts, e_consts, 2 * sizeof(double)));
-    HandleError(cudaMemcpyToSymbol(dev_nx, &nx, sizeof(int)));
-    HandleError(cudaMemcpyToSymbol(dev_ny, &ny, sizeof(int)));
+    HandleError(cudaMemcpyToSymbolAsync(deriv_consts, d_consts, 4 * sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(adams_consts, a_consts, 2 * sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(etatt_consts, e_consts, 2 * sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(dev_nx, &nx, sizeof(int)));
+    HandleError(cudaMemcpyToSymbolAsync(dev_ny, &ny, sizeof(int)));
 }
 
 void HandleError(cudaError error) {
