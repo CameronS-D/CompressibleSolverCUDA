@@ -35,15 +35,6 @@ const double oneOverN = 1. / (double) N;
 const double CFL = 0.025;
 const double deltaT = CFL * deltaX;
 
-// Derivative stencil constants
-const double d_consts[] = { 1. / (2. * deltaX) , 1. / (2. * deltaY), 1. / deltaX / deltaX, 1. / deltaY / deltaY };
-const double a_consts[] = { 1.5 * deltaT, 0.5 * deltaT };
-const double e_consts[] = { heatRatio - 1., heatRatio / (heatRatio - 1.) / heatCapacityP };
-
-__constant__ double deriv_consts[4];
-__constant__ double adams_consts[2];
-__constant__ double etatt_consts[2];
-
 // Kernel launch constants for x-derivative
 const unsigned int dx_threads_x = 1024;
 const unsigned int dx_threads_y = 1;
@@ -59,6 +50,17 @@ const unsigned int dy_blocks_x = (unsigned int)ceil((double)nx / dy_threads_x);
 const unsigned int dy_blocks_y = (unsigned int)ceil((double)ny / dy_threads_y);
 const dim3 dy_blockGrid(dy_blocks_x, dy_blocks_y);
 const dim3 dy_threadGrid(dy_threads_x, dy_threads_y);
+
+// Derivative stencil constants
+const double d_consts[] = { 1. / (2. * deltaX) , 1. / (2. * deltaY), 1. / deltaX / deltaX, 1. / deltaY / deltaY };
+const double a_consts[] = { 1.5 * deltaT, 0.5 * deltaT };
+const double e_consts[] = { heatRatio - 1., heatRatio / (heatRatio - 1.) / heatCapacityP };
+
+__constant__ double deriv_consts[4];
+__constant__ double adams_consts[2];
+__constant__ double etatt_consts[2];
+__constant__ int dev_nx;
+__constant__ int dev_ny;
 
 
 void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
@@ -149,7 +151,7 @@ int main()
 
     InitialiseArrays(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
     AllocateGpuMemory(hostVariables, gpuVariables, numOfVariables, bytes);
-    
+
     printf("The time step of the simulation is %.9E \n", deltaT);
     printf("Average values at t=");
     std::cout.flush();
@@ -159,11 +161,11 @@ int main()
         Fluxx(gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_temp, gpu_energy, gpu_rho, gpu_pressure, gpu_rou, gpu_rov, gpu_roe, gpu_scp,
             tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8, tb9, tba, tbb, fro, fru, frv, fre, ftp);
   
-        Adams << < ceil(nx * ny / 256) + 1, 256 >> > (fro, prev_fro, gpu_rho);
-        Adams << < ceil(nx * ny / 256) + 1, 256 >> > (fru, prev_fru, gpu_rou);
-        Adams << < ceil(nx * ny / 256) + 1, 256 >> > (frv, prev_frv, gpu_rov);
-        Adams << < ceil(nx * ny / 256) + 1, 256 >> > (fre, prev_fre, gpu_roe);
-        Adams << < ceil(nx * ny / 256) + 1, 256 >> > (ftp, prev_ftp, gpu_scp);
+        Adams << < dx_blockGrid, dx_threadGrid >> > (fro, prev_fro, gpu_rho);
+        Adams << < dx_blockGrid, dx_threadGrid >> > (fru, prev_fru, gpu_rou);
+        Adams << < dx_blockGrid, dx_threadGrid >> > (frv, prev_frv, gpu_rov);
+        Adams << < dx_blockGrid, dx_threadGrid >> > (fre, prev_fre, gpu_roe);
+        Adams << < dx_blockGrid, dx_threadGrid >> > (ftp, prev_ftp, gpu_scp);
 
         Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_rho, gpu_rou, gpu_rov, gpu_roe, gpu_uVelocity, gpu_vVelocity, gpu_pressure, gpu_temp);
 
@@ -251,6 +253,8 @@ void AllocateGpuMemory(double* hostVariableList[], double** gpuVariableList[], c
     HandleError(cudaMemcpyToSymbol(deriv_consts, d_consts, 4 * sizeof(double)));
     HandleError(cudaMemcpyToSymbol(adams_consts, a_consts, 2 * sizeof(double)));
     HandleError(cudaMemcpyToSymbol(etatt_consts, e_consts, 2 * sizeof(double)));
+    HandleError(cudaMemcpyToSymbol(dev_nx, &nx, sizeof(int)));
+    HandleError(cudaMemcpyToSymbol(dev_ny, &ny, sizeof(int)));
 }
 
 void HandleError(cudaError error) {
@@ -342,25 +346,25 @@ __global__ void Derix(const double* f, double* deriv_f) {
     // Local and global arrays use row-major storage
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
     int global_j = blockDim.y * blockIdx.y + threadIdx.y;
-    int global_idx = nx * global_j + global_i;
+    int global_idx = dev_nx * global_j + global_i;
     int i = threadIdx.x + 1;
     int j = threadIdx.y;
     int local_idx = (blockDim.x + 2) * j + i;
 
-    if (global_i > nx || global_j >= ny) { return; }
-    if (global_i == nx) { global_idx -= nx; }
+    if (global_i > dev_nx || global_j >= dev_ny) { return; }
+    if (global_i == dev_nx) { global_idx -= dev_nx; }
 
-    __shared__ double tile_f[(dx_threads_x + 2) * dx_threads_y];
+    __shared__ double tile_f[(1024 + 2) * 1];
 
     // Copy from global to shared memory
     tile_f[local_idx] = f[global_idx];
-    if (global_i == nx) { return; }
+    if (global_i == dev_nx) { return; }
 
 
     // Apply periodic boundary conditions
     if (threadIdx.x == 0) {
         if (global_i == 0) {
-            tile_f[local_idx - 1] = f[global_idx + nx - 1];
+            tile_f[local_idx - 1] = f[global_idx + dev_nx - 1];
         }
         else {
             tile_f[local_idx - 1] = f[global_idx - 1];
@@ -368,8 +372,8 @@ __global__ void Derix(const double* f, double* deriv_f) {
     }
  
     if (threadIdx.x == blockDim.x - 1) {
-        if (global_i == nx - 1) {
-            tile_f[local_idx + 1] = f[nx * global_j];
+        if (global_i == dev_nx - 1) {
+            tile_f[local_idx + 1] = f[dev_nx * global_j];
         }
         else {
             tile_f[local_idx + 1] = f[global_idx + 1];
@@ -441,36 +445,36 @@ __global__ void Deriy(const double* f, double* deriv_f) {
     // Local and global arrays use row-major storage
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
     int global_j = blockDim.y * blockIdx.y + threadIdx.y;
-    int global_idx = nx * global_j + global_i;
+    int global_idx = dev_nx * global_j + global_i;
     int i = threadIdx.x;
     int j = threadIdx.y + 1;
     int local_idx = (blockDim.y + 2) * i + j;
 
-    if (global_i >= nx || global_j > ny) { return; }
-    if (global_j == ny) { global_idx = global_i; }
+    if (global_i >= dev_nx || global_j > dev_ny) { return; }
+    if (global_j == dev_ny) { global_idx = global_i; }
 
-    __shared__ double tile_f[(dy_threads_y + 2) * dy_threads_x];
+    __shared__ double tile_f[(32 + 2) * 32];
 
     // Copy from global to shared memory
     tile_f[local_idx] = f[global_idx];
-    if (global_j == ny) { return; }
+    if (global_j == dev_ny) { return; }
 
     // Apply periodic boundary conditions
     if (threadIdx.y == 0) {
         if (global_j == 0) {
-            tile_f[local_idx - 1] = f[global_idx + nx * (ny - 1)];
+            tile_f[local_idx - 1] = f[global_idx + dev_nx * (dev_ny - 1)];
         }
         else {
-            tile_f[local_idx - 1] = f[global_idx - nx];
+            tile_f[local_idx - 1] = f[global_idx - dev_nx];
         }
     }
 
     if (threadIdx.y == blockDim.y - 1) {
-        if (global_j == ny - 1) {
+        if (global_j == dev_ny - 1) {
             tile_f[local_idx + 1] = f[global_i];
         }
         else {
-            tile_f[local_idx + 1] = f[global_idx + nx];
+            tile_f[local_idx + 1] = f[global_idx + dev_nx];
         }
     }
 
@@ -538,7 +542,7 @@ __global__ void SubFluxx1(const double* uVelocity, const double* vVelocity, cons
     double* fro, double* tb1, double* tb2) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= nx * ny) { return; }
+    if (idx >= dev_nx * dev_ny) { return; }
     
     fro[idx] = -tb1[idx] - tb2[idx];
 
@@ -553,7 +557,7 @@ __global__ void SubFluxx2(const double dynViscosity, const double oneOverEta, co
     double* tb1, double* tb2, double* tba, double* fru) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= nx * ny) { return; }
+    if (idx >= dev_nx * dev_ny) { return; }
 
     const double temp = 1. / 3., temp2 = 4. * temp;
     double cache;
@@ -573,7 +577,7 @@ __global__ void SubFluxx3(const double dynViscosity, const double oneOverEta,
     double* tbb, double* frv) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= nx * ny) { return; }
+    if (idx >= dev_nx * dev_ny) { return; }
     const double temp = 1. / 3., temp2 = 4. * temp;
     double cache;
 
@@ -586,7 +590,7 @@ __global__ void SubFluxx4(const double oneOverEta, const double xkt, const doubl
     const double* uVelocity, const double* vVelocity, const double* scp, const double* cylinderMask, double* ftp) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= nx * ny) { return; }
+    if (idx >= dev_nx * dev_ny) { return; }
 
     ftp[idx] = -uVelocity[idx] * tb1[idx] - vVelocity[idx] * tb2[idx]
         + xkt * (tb3[idx] + tb4[idx]) - oneOverEta * cylinderMask[idx] * scp[idx];
@@ -598,7 +602,7 @@ __global__ void SubFluxx5(const double dynViscosity, const double* uVelocity, co
     double* tb1, double* tb2, double* tb3, double* tb4, double* fre) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= nx * ny) { return; }
+    if (idx >= dev_nx * dev_ny) { return; }
 
     double tb[] = { tb1[idx], tb2[idx], tb3[idx], tb4[idx] };
     double velCache[] = { uVelocity[idx], vVelocity[idx] };
@@ -619,26 +623,40 @@ __global__ void SubFluxx6(const double lambda, const double* tb5, const double* 
     const double* tb9, const double* tba, double* fre) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= nx * ny) { return; }
+    if (idx >= dev_nx * dev_ny) { return; }
 
     fre[idx] = fre[idx] - tb5[idx] - tb6[idx] - tb7[idx] - tb8[idx] + lambda * (tb9[idx] + tba[idx]);
 }
 
 __global__ void Adams(const double* phi_current, double* phi_previous, double* phi_integral) {
 
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= nx * ny) { return; }
+    // Local and global arrays use row-major storage
+    int global_i = blockDim.x * blockIdx.x + threadIdx.x;
+    int global_j = blockDim.y * blockIdx.y + threadIdx.y;
+    int global_idx = dev_nx * global_j + global_i;
+    int i = threadIdx.x;
+    int j = threadIdx.y;
+    int local_idx = blockDim.x * j + i;
 
-    double cache = phi_current[idx];
-    phi_integral[idx] += adams_consts[0] * cache - adams_consts[1] * phi_previous[idx];
-    phi_previous[idx] = cache;
+    if (global_i >= dev_nx || global_j >= dev_ny) { return; }
+
+    __shared__ double tile_phi_curr[1024];
+    __shared__ double tile_phi_prev[1024];
+
+    // Copy from global to shared memory
+    tile_phi_curr[local_idx] = phi_current[global_idx];
+    tile_phi_prev[local_idx] = phi_previous[global_idx];
+
+    phi_integral[global_idx] += adams_consts[0] * tile_phi_curr[local_idx] - adams_consts[1] * tile_phi_prev[local_idx];
+    phi_previous[global_idx] = tile_phi_curr[local_idx];
+
 }
 
 __global__ void Etatt(const double* rho, const double* rou, const double* rov, const double* roe,
     double* uVelocity, double* vVelocity, double* pressure, double* temp) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= nx * ny) { return; }
+    if (idx >= dev_nx * dev_ny) { return; }
 
     double oneOverRho = 1. / rho[idx];
     double roVel[] = { rou[idx], rov[idx] };
