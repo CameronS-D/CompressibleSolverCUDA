@@ -44,10 +44,11 @@ const dim3 dx_blockGrid(dx_blocks_x, dx_blocks_y);
 const dim3 dx_threadGrid(dx_threads_x, dx_threads_y);
 
 // Kernel launch constants for y-derivative
+const int ptsPerThrd = 4;
 const unsigned int dy_threads_x = 32;
 const unsigned int dy_threads_y = 32;
 const unsigned int dy_blocks_x = (unsigned int)ceil((double)nx / dy_threads_x);
-const unsigned int dy_blocks_y = (unsigned int)ceil((double)ny / dy_threads_y);
+const unsigned int dy_blocks_y = (unsigned int)ceil((double)ny / ptsPerThrd / dy_threads_y);
 const dim3 dy_blockGrid(dy_blocks_x, dy_blocks_y);
 const dim3 dy_threadGrid(dy_threads_x, dy_threads_y);
 
@@ -61,7 +62,7 @@ __constant__ double adams_consts[2];
 __constant__ double etatt_consts[2];
 __constant__ int dev_nx;
 __constant__ int dev_ny;
-
+__constant__ int pointsPerThread;
 
 void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
 void HandleError(cudaError);
@@ -251,11 +252,12 @@ void AllocateGpuMemory(double* hostVariableList[], double** gpuVariableList[], c
     }
 
     // Allocate constant gpu memory
-    HandleError(cudaMemcpyToSymbolAsync(deriv_consts, d_consts, 4 * sizeof(double)));
-    HandleError(cudaMemcpyToSymbolAsync(adams_consts, a_consts, 2 * sizeof(double)));
-    HandleError(cudaMemcpyToSymbolAsync(etatt_consts, e_consts, 2 * sizeof(double)));
-    HandleError(cudaMemcpyToSymbolAsync(dev_nx, &nx, sizeof(int)));
-    HandleError(cudaMemcpyToSymbolAsync(dev_ny, &ny, sizeof(int)));
+    HandleError(cudaMemcpyToSymbolAsync(deriv_consts, d_consts, 4 * sizeof(double), 0, cudaMemcpyHostToDevice));
+    HandleError(cudaMemcpyToSymbolAsync(adams_consts, a_consts, 2 * sizeof(double), 0, cudaMemcpyHostToDevice));
+    HandleError(cudaMemcpyToSymbolAsync(etatt_consts, e_consts, 2 * sizeof(double), 0, cudaMemcpyHostToDevice));
+    HandleError(cudaMemcpyToSymbolAsync(dev_nx, &nx, sizeof(int), 0, cudaMemcpyHostToDevice));
+    HandleError(cudaMemcpyToSymbolAsync(dev_ny, &ny, sizeof(int), 0, cudaMemcpyHostToDevice));
+    HandleError(cudaMemcpyToSymbolAsync(pointsPerThread, &ptsPerThrd, sizeof(int), 0, cudaMemcpyHostToDevice));
 }
 
 void HandleError(cudaError error) {
@@ -445,20 +447,16 @@ __global__ void Deriy(const double* f, double* deriv_f) {
 
     // Local and global arrays use row-major storage
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
-    int global_j = blockDim.y * blockIdx.y + threadIdx.y;
+    int global_j = blockDim.y * blockIdx.y * pointsPerThread + threadIdx.y;
     int global_idx = dev_nx * global_j + global_i;
     int i = threadIdx.x;
     int j = threadIdx.y + 1;
-    int local_idx = (blockDim.y + 2) * i + j;
+    int local_idx = (blockDim.y * pointsPerThread + 2) * i + j;
 
     if (global_i >= dev_nx || global_j > dev_ny) { return; }
     if (global_j == dev_ny) { global_idx = global_i; }
 
-    __shared__ double tile_f[(32 + 2) * 32];
-
-    // Copy from global to shared memory
-    tile_f[local_idx] = f[global_idx];
-    if (global_j == dev_ny) { return; }
+    __shared__ double tile_f[(32 * ptsPerThrd + 2) * 32];
 
     // Apply periodic boundary conditions
     if (threadIdx.y == 0) {
@@ -470,8 +468,22 @@ __global__ void Deriy(const double* f, double* deriv_f) {
         }
     }
 
+    int count = 0;
+    while (count < pointsPerThread && global_idx < dev_nx * dev_ny) {
+        tile_f[local_idx] = f[global_idx];
+
+        global_idx += dev_nx * blockDim.y;
+        local_idx += blockDim.y;
+        count++;
+    }
+
+    if (global_j == dev_ny) { return; }
+
     if (threadIdx.y == blockDim.y - 1) {
-        if (global_j == dev_ny - 1) {
+        global_idx -= dev_nx * blockDim.y;
+        local_idx -= blockDim.y;
+
+        if (global_idx == dev_nx * (dev_ny - 1) + global_i) {
             tile_f[local_idx + 1] = f[global_i];
         }
         else {
@@ -479,17 +491,36 @@ __global__ void Deriy(const double* f, double* deriv_f) {
         }
     }
 
+    global_idx = dev_nx * global_j + global_i;
+    local_idx = (blockDim.y * pointsPerThread + 2) * i + j;
+
     __syncthreads();
 
     switch (derivative) {
     case 1:
-        // Case of 1st x derivative
-        deriv_f[global_idx] = deriv_consts[1] * (tile_f[local_idx + 1] - tile_f[local_idx - 1]);
+        count = 0;
+        while (count < pointsPerThread && global_idx < dev_nx * dev_ny) {
+            // Case of 1st x derivative
+            deriv_f[global_idx] = deriv_consts[1] * (tile_f[local_idx + 1] - tile_f[local_idx - 1]);
+
+            global_idx += dev_nx * blockDim.y;
+            local_idx += blockDim.y;
+            count++;
+        }
+        
         break;
 
     case 2:
-        // Case of 2nd x derivative
-        deriv_f[global_idx] = deriv_consts[3] * (tile_f[local_idx + 1] - 2 * tile_f[local_idx] + tile_f[local_idx - 1]);
+        count = 0;
+        while (count < pointsPerThread && global_idx < dev_nx * dev_ny) {
+            // Case of 2nd x derivative
+            deriv_f[global_idx] = deriv_consts[3] * (tile_f[local_idx + 1] - 2 * tile_f[local_idx] + tile_f[local_idx - 1]);
+
+            global_idx += dev_nx * blockDim.y;
+            local_idx += blockDim.y;
+            count++;
+        }
+
         break;
     }
 
