@@ -10,6 +10,8 @@
 #include <thrust/device_vector.h>
 #include <thrust/reduce.h>
 #include <thrust/functional.h>
+#include <chrono>
+#include<fstream>
 
 const int nx = 4097, ny = nx, nt = 100, ns = 3, nf = 3, N = nx * ny;
 const int mx = ns * nx, my = nf * ny;
@@ -68,6 +70,7 @@ void InitialiseArrays(double*, double*, double*, double*, double*, double*, doub
 void HandleError(cudaError);
 void AllocateGpuMemory(double* [], double** [], const int, const unsigned long int);
 void PrintAverages(const int, const double*, const double*, const double*);
+void WriteToFile(const int length, long long runtimes[]);
 void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocity, double* gpu_temp, double* gpu_energy,
     double* gpu_rho, double* gpu_pressure, double* gpu_rou, double* gpu_rov, double* gpu_roe, double* gpu_scp,
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
@@ -170,7 +173,11 @@ int main()
     cudaStreamCreate(&stream4);
     cudaStreamCreate(&stream5);
 
+    long long runtimes[nt];
+
     for (int i = 1; i <= nt; i++) {
+        auto start = std::chrono::high_resolution_clock::now();
+
         Fluxx(gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_temp, gpu_energy, gpu_rho, gpu_pressure, gpu_rou, gpu_rov, gpu_roe, gpu_scp,
             tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8, tb9, tba, tbb, fro, fru, frv, fre, ftp);
   
@@ -186,6 +193,9 @@ int main()
         cudaMemcpyAsync(prev_ftp, ftp, bytes, cudaMemcpyDeviceToDevice, stream5);
 
         Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_rho, gpu_rou, gpu_rov, gpu_roe, gpu_uVelocity, gpu_vVelocity, gpu_pressure, gpu_temp);
+
+        auto stop = std::chrono::high_resolution_clock::now();
+        runtimes[i] = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
 
         PrintAverages(i, gpu_uVelocity, gpu_vVelocity, gpu_scp);
     }
@@ -218,6 +228,8 @@ int main()
     HandleError(cudaFree(prev_fre));
     HandleError(cudaFree(prev_ftp));
     HandleError(cudaFree(gpu_averages));
+
+    WriteToFile(nt, runtimes);
 
     return 0;
 }
@@ -297,6 +309,22 @@ void PrintAverages(const int timestep, const double* gpu_uVelocity, const double
     }   
 
     printf("%i %.9G %.9E %.9G \n", timestep, mean[0], mean[1], mean[2]);
+}
+
+void WriteToFile(const int length, long long runtimes[]) {
+
+    using namespace std; {
+        string filename = "Runtimes/cuda_runtimes_" + to_string(nx) + ".txt";
+        ofstream outputFile;
+
+        outputFile.open(filename, ios::trunc);
+
+        for (int i = 0; i < nt; i++) {
+            outputFile << runtimes[i] << "\n";
+        }
+
+        outputFile.close();
+    }
 }
 
 void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocity, double* gpu_temp, double* gpu_energy, 
@@ -682,22 +710,10 @@ __global__ void Adams(const double* phi_current, double* phi_previous, double* p
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
     int global_j = blockDim.y * blockIdx.y + threadIdx.y;
     int global_idx = dev_nx * global_j + global_i;
-    //int i = threadIdx.x;
-    //int j = threadIdx.y;
-    //int local_idx = blockDim.x * j + i;
 
     if (global_i >= dev_nx || global_j >= dev_ny) { return; }
 
-    //__shared__ double tile_phi_curr[1024];
-    //__shared__ double tile_phi_prev[1024];
-
-    // Copy from global to shared memory
-    //tile_phi_curr[local_idx] = phi_current[global_idx];
-    //tile_phi_prev[local_idx] = phi_previous[global_idx];
-
-    //phi_integral[global_idx] += adams_consts[0] * tile_phi_curr[local_idx] - adams_consts[1] * tile_phi_prev[local_idx];
     phi_integral[global_idx] += adams_consts[0] * phi_current[global_idx] - adams_consts[1] * phi_previous[global_idx];
-    //phi_previous[global_idx] = tile_phi_curr[local_idx];
 
 }
 
