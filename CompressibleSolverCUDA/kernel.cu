@@ -195,7 +195,7 @@ int main()
         Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_rho, gpu_rou, gpu_rov, gpu_roe, gpu_uVelocity, gpu_vVelocity, gpu_pressure, gpu_temp);
 
         auto stop = std::chrono::high_resolution_clock::now();
-        runtimes[i] = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
+        runtimes[i - 1] = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count();
 
         PrintAverages(i, gpu_uVelocity, gpu_vVelocity, gpu_scp);
     }
