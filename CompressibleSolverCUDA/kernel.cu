@@ -159,15 +159,31 @@ int main()
     std::cout.flush();
     PrintAverages(0, gpu_uVelocity, gpu_vVelocity, gpu_scp);
 
+    cudaStream_t stream1;
+    cudaStream_t stream2;
+    cudaStream_t stream3;
+    cudaStream_t stream4;
+    cudaStream_t stream5;
+    cudaStreamCreate(&stream1);
+    cudaStreamCreate(&stream2);
+    cudaStreamCreate(&stream3);
+    cudaStreamCreate(&stream4);
+    cudaStreamCreate(&stream5);
+
     for (int i = 1; i <= nt; i++) {
         Fluxx(gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_temp, gpu_energy, gpu_rho, gpu_pressure, gpu_rou, gpu_rov, gpu_roe, gpu_scp,
             tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8, tb9, tba, tbb, fro, fru, frv, fre, ftp);
   
-        Adams << < dx_blockGrid, dx_threadGrid >> > (fro, prev_fro, gpu_rho);
-        Adams << < dx_blockGrid, dx_threadGrid >> > (fru, prev_fru, gpu_rou);
-        Adams << < dx_blockGrid, dx_threadGrid >> > (frv, prev_frv, gpu_rov);
-        Adams << < dx_blockGrid, dx_threadGrid >> > (fre, prev_fre, gpu_roe);
-        Adams << < dx_blockGrid, dx_threadGrid >> > (ftp, prev_ftp, gpu_scp);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream1 >> > (fro, prev_fro, gpu_rho);
+        cudaMemcpyAsync(prev_fro, fro, bytes, cudaMemcpyDeviceToDevice, stream1);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream2 >> > (fru, prev_fru, gpu_rou);
+        cudaMemcpyAsync(prev_fru, fru, bytes, cudaMemcpyDeviceToDevice, stream2);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream3 >> > (frv, prev_frv, gpu_rov);
+        cudaMemcpyAsync(prev_frv, frv, bytes, cudaMemcpyDeviceToDevice, stream3);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream4 >> > (fre, prev_fre, gpu_roe);
+        cudaMemcpyAsync(prev_fre, fre, bytes, cudaMemcpyDeviceToDevice, stream4);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream5 >> > (ftp, prev_ftp, gpu_scp);
+        cudaMemcpyAsync(prev_ftp, ftp, bytes, cudaMemcpyDeviceToDevice, stream5);
 
         Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_rho, gpu_rou, gpu_rov, gpu_roe, gpu_uVelocity, gpu_vVelocity, gpu_pressure, gpu_temp);
 
@@ -666,21 +682,22 @@ __global__ void Adams(const double* phi_current, double* phi_previous, double* p
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
     int global_j = blockDim.y * blockIdx.y + threadIdx.y;
     int global_idx = dev_nx * global_j + global_i;
-    int i = threadIdx.x;
-    int j = threadIdx.y;
-    int local_idx = blockDim.x * j + i;
+    //int i = threadIdx.x;
+    //int j = threadIdx.y;
+    //int local_idx = blockDim.x * j + i;
 
     if (global_i >= dev_nx || global_j >= dev_ny) { return; }
 
-    __shared__ double tile_phi_curr[1024];
-    __shared__ double tile_phi_prev[1024];
+    //__shared__ double tile_phi_curr[1024];
+    //__shared__ double tile_phi_prev[1024];
 
     // Copy from global to shared memory
-    tile_phi_curr[local_idx] = phi_current[global_idx];
-    tile_phi_prev[local_idx] = phi_previous[global_idx];
+    //tile_phi_curr[local_idx] = phi_current[global_idx];
+    //tile_phi_prev[local_idx] = phi_previous[global_idx];
 
-    phi_integral[global_idx] += adams_consts[0] * tile_phi_curr[local_idx] - adams_consts[1] * tile_phi_prev[local_idx];
-    phi_previous[global_idx] = tile_phi_curr[local_idx];
+    //phi_integral[global_idx] += adams_consts[0] * tile_phi_curr[local_idx] - adams_consts[1] * tile_phi_prev[local_idx];
+    phi_integral[global_idx] += adams_consts[0] * phi_current[global_idx] - adams_consts[1] * phi_previous[global_idx];
+    //phi_previous[global_idx] = tile_phi_curr[local_idx];
 
 }
 
