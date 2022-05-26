@@ -11,31 +11,10 @@
 #include <thrust/reduce.h>
 #include <thrust/functional.h>
 #include <chrono>
-#include<fstream>
+#include <fstream>
 
-const int nx = 4097, ny = nx, nt = 100, ns = 3, nf = 3, N = nx * ny;
-const int mx = ns * nx, my = nf * ny;
-
-const double reynolds = 200., mach = 0.2, prandtl = 0.7;
-const double rhoInf = 1., cInf = 1., cylinderD = 1., heatCapacityP = 1., heatRatio = 1.4;
-
-const double heatCapacityV = heatCapacityP / heatRatio;
-const double uInf = mach * cInf;
-const double dynViscosity = rhoInf * uInf * cylinderD / reynolds;
-// thermal conductivity
-const double lambda = dynViscosity * heatCapacityP / prandtl;
-const double tempInf = cInf * cInf / (heatCapacityP * (heatRatio - 1.));
-const double eta = 0.1 / 2.;
-const double oneOverEta = 1. / eta;
-const double xkt = lambda / (heatCapacityP * rhoInf);
-
-const double xLength = 4. * cylinderD;
-const double yLength = 4. * cylinderD;
-const double deltaX = xLength / (double)nx;
-const double deltaY = yLength / (double)ny;
-const double oneOverN = 1. / (double) N;
-const double CFL = 0.025;
-const double deltaT = CFL * deltaX;
+const int nx = 4097, ny = nx, nt = 100, N = nx * ny;
+const double oneOverN = 1. / (double)N;
 
 // Kernel launch constants for x-derivative
 const unsigned int dx_threads_x = 1024;
@@ -54,21 +33,30 @@ const unsigned int dy_blocks_y = (unsigned int)ceil((double)ny / ptsPerThrd / dy
 const dim3 dy_blockGrid(dy_blocks_x, dy_blocks_y);
 const dim3 dy_threadGrid(dy_threads_x, dy_threads_y);
 
-// Derivative stencil constants
-const double d_consts[] = { 1. / (2. * deltaX) , 1. / (2. * deltaY), 1. / deltaX / deltaX, 1. / deltaY / deltaY };
-const double a_consts[] = { 1.5 * deltaT, 0.5 * deltaT };
-const double e_consts[] = { heatRatio - 1., heatRatio / (heatRatio - 1.) / heatCapacityP };
+__device__ __constant__ double deriv_consts[4];
+__device__ __constant__ double adams_consts[2];
+__device__ __constant__ double etatt_consts[2];
+__device__ __constant__ int dev_nx;
+__device__ __constant__ int dev_ny;
+__device__ __constant__ int dev_N;
+__device__ __constant__ int pointsPerThread;
+__device__ __constant__ double deltaX;
+__device__ __constant__ double deltaY;
+__device__ __constant__ double xLength;
+__device__ __constant__ double yLength;
+__device__ __constant__ double tempInf;
+__device__ __constant__ double pressInf;
+__device__ __constant__ double uInf;
+__device__ __constant__ double rhoInf;
+__device__ __constant__ double heatCapacityV;
+__device__ __constant__ double oneOverEta;
+__device__ __constant__ double cylinderRadSquared;
+__device__ __constant__ double dynViscosity;
+__device__ __constant__ double xkt;
+__device__ __constant__ double lambda;
 
-__constant__ double deriv_consts[4];
-__constant__ double adams_consts[2];
-__constant__ double etatt_consts[2];
-__constant__ int dev_nx;
-__constant__ int dev_ny;
-__constant__ int pointsPerThread;
-
-void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
 void HandleError(cudaError);
-void AllocateGpuMemory(double* [], double** [], const int, const unsigned long int);
+double InitialiseDeviceConstants();
 void PrintAverages(const int, const double*, const double*, const double*);
 void WriteToFile(const int length, long long runtimes[]);
 void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocity, double* gpu_temp, double* gpu_energy,
@@ -76,24 +64,24 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
     double* tba, double* tbb, double* fro, double* fru, double* frv, double* fre, double* ftp);
 
+__global__ void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
 template<int>
 __global__ void Derix(const double*, double*);
 template<int>
 __global__ void Deriy(const double*, double*);
 __global__ void SubFluxx1(const double*, const double*, const double*, double*, double*, double*);
-__global__ void SubFluxx2(const double dynViscosity, const double oneOverEta, const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
+__global__ void SubFluxx2(const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
     const double* cylinderMask, const double* uVelocity, const double* vVelocity, const double* rou, const double* rov,
     double* tb1, double* tb2, double* tba, double* fru);
-__global__ void SubFluxx3(const double dynViscosity, const double oneOverEta,
-    const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
+__global__ void SubFluxx3(const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
     const double* cylinderMask, const double* vVelocity,
     double* tbb, double* frv);
-__global__ void SubFluxx4(const double oneOverEta, const double xkt, const double* tb1, const double* tb2, const double* tb3, const double* tb4,
+__global__ void SubFluxx4(const double* tb1, const double* tb2, const double* tb3, const double* tb4,
     const double* uVelocity, const double* vVelocity, const double* scp, const double* cylinderMask, double* ftp);
-__global__ void SubFluxx5(const double dynViscosity, const double* uVelocity, const double* vVelocity,
+__global__ void SubFluxx5(const double* uVelocity, const double* vVelocity,
     const double* tba, const double* tbb, const double* pressure, const double* roe,
     double* tb1, double* tb2, double* tb3, double* tb4, double* fre);
-__global__ void SubFluxx6(const double lambda, const double* tb5, const double* tb6, const double* tb7, const double* tb8,
+__global__ void SubFluxx6(const double* tb5, const double* tb6, const double* tb7, const double* tb8,
     const double* tb9, const double* tba, double* fre);
 __global__ void Adams(const double* phi_current, double* phi_previous, double* phi_integral);
 __global__ void Etatt(const double* rho, const double* rou, const double* rov, const double* roe,
@@ -102,23 +90,8 @@ __global__ void Etatt(const double* rho, const double* rou, const double* rov, c
 int main()
 {
     const int numOfVariables = 11;
-    double* cylinderMask = new double[nx * ny]();
-    double* uVelocity = new double[nx * ny];
-    double* vVelocity = new double[nx * ny];
-    double* temp = new double[nx * ny];
-    double* energy = new double[nx * ny];
-    double* rho = new double[nx * ny];
-    double* pressure = new double[nx * ny];
-    double* rou = new double[nx * ny];
-    double* rov = new double[nx * ny];
-    double* roe = new double[nx * ny];
-    double* scp = new double[nx * ny];
-    double averages[3], *gpu_averages;
-
-    double* gpu_cylinderMask, * gpu_uVelocity, * gpu_vVelocity, * gpu_temp, * gpu_energy, * gpu_rho, * gpu_pressure, * gpu_rou, * gpu_rov, * gpu_roe, * gpu_scp;
-
-    double* hostVariables[numOfVariables] = { cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp };
-    double** gpuVariables[numOfVariables] = { &gpu_cylinderMask, &gpu_uVelocity, &gpu_vVelocity, &gpu_temp, &gpu_energy, &gpu_rho, &gpu_pressure, &gpu_rou, &gpu_rov, &gpu_roe, &gpu_scp };
+    double* cylinderMask, * uVelocity, * vVelocity, * temp, * energy, * rho, * pressure, * rou, * rov, * roe, * scp;
+    double** variableList[numOfVariables] = { &cylinderMask, &uVelocity, &vVelocity, &temp, &energy, &rho, &pressure, &rou, &rov, &roe, &scp };
 
     double* tb1, * tb2, * tb3, * tb4, * tb5, * tb6, * tb7, * tb8, * tb9;
     double* tba, * tbb, * fro, * fru, * frv, * fre, * ftp;
@@ -152,15 +125,20 @@ int main()
     HandleError(cudaMemsetAsync(prev_fre, 0.0, bytes));
     HandleError(cudaMemsetAsync(prev_ftp, 0.0, bytes));
 
-    HandleError(cudaMalloc(&gpu_averages, 3 * sizeof(double)));
+    double deltaT = InitialiseDeviceConstants();
 
-    InitialiseArrays(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
-    AllocateGpuMemory(hostVariables, gpuVariables, numOfVariables, bytes);
+    for (int i = 0; i < numOfVariables; i++) {
+        HandleError(cudaMalloc((void**)variableList[i], bytes));
+    }
+
+    HandleError(cudaMemsetAsync(cylinderMask, 0.0, bytes));
+
+    InitialiseArrays << < dx_blockGrid, dx_threadGrid >> > (cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
 
     printf("The time step of the simulation is %.9E \n", deltaT);
     printf("Average values at t=");
     std::cout.flush();
-    PrintAverages(0, gpu_uVelocity, gpu_vVelocity, gpu_scp);
+    PrintAverages(0, uVelocity, vVelocity, scp);
 
     cudaStream_t stream1;
     cudaStream_t stream2;
@@ -176,35 +154,34 @@ int main()
     long long runtimes[nt];
 
     for (int i = 1; i <= nt; i++) {
-        auto start = std::chrono::high_resolution_clock::now();
+        //auto start = std::chrono::high_resolution_clock::now();
 
-        Fluxx(gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_temp, gpu_energy, gpu_rho, gpu_pressure, gpu_rou, gpu_rov, gpu_roe, gpu_scp,
+        Fluxx(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp,
             tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8, tb9, tba, tbb, fro, fru, frv, fre, ftp);
   
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream1 >> > (fro, prev_fro, gpu_rho);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream1 >> > (fro, prev_fro, rho);
         cudaMemcpyAsync(prev_fro, fro, bytes, cudaMemcpyDeviceToDevice, stream1);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream2 >> > (fru, prev_fru, gpu_rou);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream2 >> > (fru, prev_fru, rou);
         cudaMemcpyAsync(prev_fru, fru, bytes, cudaMemcpyDeviceToDevice, stream2);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream3 >> > (frv, prev_frv, gpu_rov);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream3 >> > (frv, prev_frv, rov);
         cudaMemcpyAsync(prev_frv, frv, bytes, cudaMemcpyDeviceToDevice, stream3);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream4 >> > (fre, prev_fre, gpu_roe);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream4 >> > (fre, prev_fre, roe);
         cudaMemcpyAsync(prev_fre, fre, bytes, cudaMemcpyDeviceToDevice, stream4);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream5 >> > (ftp, prev_ftp, gpu_scp);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream5 >> > (ftp, prev_ftp, scp);
         cudaMemcpyAsync(prev_ftp, ftp, bytes, cudaMemcpyDeviceToDevice, stream5);
 
-        Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_rho, gpu_rou, gpu_rov, gpu_roe, gpu_uVelocity, gpu_vVelocity, gpu_pressure, gpu_temp);
+        Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (rho, rou, rov, roe, uVelocity, vVelocity, pressure, temp);
 
-        cudaDeviceSynchronize();
-        auto stop = std::chrono::high_resolution_clock::now();
-        runtimes[i - 1] = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count();
+        //cudaDeviceSynchronize();
+        //auto stop = std::chrono::high_resolution_clock::now();
+        //runtimes[i - 1] = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count();
 
-        PrintAverages(i, gpu_uVelocity, gpu_vVelocity, gpu_scp);
+        PrintAverages(i, uVelocity, vVelocity, scp);
     }
 
     // Free memory on both host and device
     for (int i = 0; i < numOfVariables; i++) {
-        HandleError(cudaFree(*gpuVariables[i]) );
-        delete[] hostVariables[i];
+        HandleError(cudaFree(*variableList[i]) );
     }
 
     HandleError(cudaFree(tb1));
@@ -228,65 +205,67 @@ int main()
     HandleError(cudaFree(prev_frv));
     HandleError(cudaFree(prev_fre));
     HandleError(cudaFree(prev_ftp));
-    HandleError(cudaFree(gpu_averages));
 
-    WriteToFile(nt, runtimes);
+    //WriteToFile(nt, runtimes);
 
     return 0;
 }
 
-void InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity, double* temp,
-    double* energy, double* rho, double* pressure, double* rou, double* rov, double* roe, double* scp)
-{
+double InitialiseDeviceConstants() {
 
-    int idx;
-    double dx, dy;
-    const double radSquared = cylinderD * cylinderD / 4.;
-    const double pressInf = rhoInf * tempInf * heatCapacityP * (heatRatio - 1.) / heatRatio;
+    const double reynolds = 200., mach = 0.2, prandtl = 0.7;
+    const double host_rhoInf = 1., cInf = 1., cylinderD = 1., heatCapacityP = 1., heatRatio = 1.4;
+    const double host_cylinderRadSquared = cylinderD * cylinderD / 4.;
 
-    for (int j = 0; j < nx; j++) {
-        for (int i = 0; i < ny; i++) {
-            idx = j * ny + i;
+    const double host_heatCapacityV = heatCapacityP / heatRatio;
+    const double host_uInf = mach * cInf;
+    const double host_dynViscosity = host_rhoInf * host_uInf * cylinderD / reynolds;
+    // thermal conductivity
+    const double host_lambda = host_dynViscosity * heatCapacityP / prandtl;
+    const double host_tempInf = cInf * cInf / (heatCapacityP * (heatRatio - 1.));
+    const double eta = 0.1 / 2.;
+    const double host_oneOverEta = 1. / eta;
+    const double host_xkt = host_lambda / (heatCapacityP * host_rhoInf);
+    const double host_pressInf = host_rhoInf * host_tempInf * heatCapacityP * (heatRatio - 1.) / heatRatio;
 
-            // Masks covers points inside circle
-            dx = (double)i * deltaY - yLength / 2.;
-            dy = (double)j * deltaX - xLength / 2.;
-            if (dx * dx + dy * dy < radSquared) {
-                cylinderMask[idx] = 1.;
-            }
+    const double host_xLength = 4. * cylinderD;
+    const double host_yLength = 4. * cylinderD;
+    const double host_deltaX = host_xLength / (double)nx;
+    const double host_deltaY = host_yLength / (double)ny;
+    const double CFL = 0.025;
+    const double deltaT = CFL * host_deltaX;
 
-            uVelocity[idx] = uInf;
-            // Add small velocity perturbation
-            vVelocity[idx] = 0.01 * (sin(4. * PI * (double)i * deltaX / xLength)
-                + sin(7. * PI * (double)i * deltaX / xLength))
-                * exp(-((double)j * deltaY - yLength / 2.) * ((double)j * deltaY - yLength / 2.));
-            temp[idx] = tempInf;
-            pressure[idx] = pressInf;
-            energy[idx] = heatCapacityV * tempInf + 0.5 * (uInf * uInf + vVelocity[idx] * vVelocity[idx]);
-            rho[idx] = rhoInf;
-            rou[idx] = rhoInf * uInf;
-            rov[idx] = rhoInf * vVelocity[idx];
-            roe[idx] = rhoInf * energy[idx];
-            scp[idx] = 1.;
-        }
-    }
-}
-
-void AllocateGpuMemory(double* hostVariableList[], double** gpuVariableList[], const int length, const unsigned long int variableBytes) {
-
-    // Allocate gpu memory and copy data from host arrays
-    for (int i = 0; i < length; i++) {
-        HandleError(cudaMalloc((void**)gpuVariableList[i], variableBytes));
-        HandleError(cudaMemcpyAsync(*gpuVariableList[i], hostVariableList[i], variableBytes, cudaMemcpyHostToDevice));
-    }
+    // Derivative stencil constants
+    const double d_consts[] = { 1. / (2. * host_deltaX) , 1. / (2. * host_deltaY), 1. / host_deltaX / host_deltaX, 1. / host_deltaY / host_deltaY };
+    const double a_consts[] = { 1.5 * deltaT, 0.5 * deltaT };
+    const double e_consts[] = { heatRatio - 1., heatRatio / (heatRatio - 1.) / heatCapacityP };
 
     // Allocate constant gpu memory
-    HandleError(cudaMemcpyToSymbolAsync(deriv_consts, d_consts, 4 * sizeof(double), 0, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpyToSymbolAsync(adams_consts, a_consts, 2 * sizeof(double), 0, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpyToSymbolAsync(etatt_consts, e_consts, 2 * sizeof(double), 0, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpyToSymbolAsync(dev_nx, &nx, sizeof(int), 0, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpyToSymbolAsync(dev_ny, &ny, sizeof(int), 0, cudaMemcpyHostToDevice));
-    HandleError(cudaMemcpyToSymbolAsync(pointsPerThread, &ptsPerThrd, sizeof(int), 0, cudaMemcpyHostToDevice));
+    HandleError(cudaMemcpyToSymbolAsync(deriv_consts, d_consts, 4 * sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(adams_consts, a_consts, 2 * sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(etatt_consts, e_consts, 2 * sizeof(double)));
+    
+    HandleError(cudaMemcpyToSymbolAsync(dev_nx, &nx, sizeof(int)));
+    HandleError(cudaMemcpyToSymbolAsync(dev_ny, &ny, sizeof(int)));
+    HandleError(cudaMemcpyToSymbolAsync(dev_N, &N, sizeof(int)));
+    HandleError(cudaMemcpyToSymbolAsync(pointsPerThread, &ptsPerThrd, sizeof(int)));
+    HandleError(cudaMemcpyToSymbolAsync(deltaX, &host_deltaX, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(deltaY, &host_deltaY, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(xLength, &host_xLength, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(yLength, &host_yLength, sizeof(double)));
+    
+    HandleError(cudaMemcpyToSymbolAsync(tempInf, &host_tempInf, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(pressInf, &host_pressInf, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(uInf, &host_uInf, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(rhoInf, &host_rhoInf, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(heatCapacityV, &host_heatCapacityV, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(oneOverEta, &host_oneOverEta, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(cylinderRadSquared, &host_cylinderRadSquared, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(dynViscosity, &host_dynViscosity, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(xkt, &host_xkt, sizeof(double)));
+    HandleError(cudaMemcpyToSymbolAsync(lambda, &host_lambda, sizeof(double)));
+
+    return deltaT;
 }
 
 void HandleError(cudaError error) {
@@ -333,9 +312,7 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
     double* tba, double* tbb, double* fro, double* fru, double* frv, double* fre, double* ftp) {
 
-    //Derix<1> << < dim3(1, ny), 256 >> > (gpu_rou, tb1);
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_rou, tb1);
-    //Deriy<1> << < dim3(nx, 1), 256 >> > (gpu_rov, tb2);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (gpu_rov, tb2);
 
     SubFluxx1 << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_uVelocity, gpu_vVelocity, gpu_rou, fro, tb1, tb2);
@@ -348,7 +325,7 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_vVelocity, tb8);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb8, tb9);
 
-    SubFluxx2 << < ceil(nx * ny / 256) + 1, 256 >> > (dynViscosity, oneOverEta, tb3, tb4, tb5, tb6, tb7, tb9,
+    SubFluxx2 << < ceil(nx * ny / 256) + 1, 256 >> > (tb3, tb4, tb5, tb6, tb7, tb9,
         gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_rou, gpu_rov, tb1, tb2, tba, fru);
 
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (gpu_pressure, tb3);
@@ -359,7 +336,7 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_uVelocity, tb8);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb8, tb9);
 
-    SubFluxx3 << < ceil(nx * ny / 256) + 1, 256 >> > (dynViscosity, oneOverEta, tb3, tb4, tb5, tb6, tb7, tb9,
+    SubFluxx3 << < ceil(nx * ny / 256) + 1, 256 >> > (tb3, tb4, tb5, tb6, tb7, tb9,
         gpu_cylinderMask, gpu_vVelocity, tbb, frv);
 
     // Equation for the tempature
@@ -368,7 +345,7 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_scp, tb3);
     Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (gpu_scp, tb4);
 
-    SubFluxx4 << < ceil(nx * ny / 256) + 1, 256 >> > (oneOverEta, xkt, tb1, tb2, tb3, tb4,
+    SubFluxx4 << < ceil(nx * ny / 256) + 1, 256 >> > (tb1, tb2, tb3, tb4,
         gpu_uVelocity, gpu_vVelocity, gpu_scp, gpu_cylinderMask, ftp);
 
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_uVelocity, tb1);
@@ -376,7 +353,7 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (gpu_uVelocity, tb3);
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_vVelocity, tb4);
 
-    SubFluxx5 << < ceil(nx * ny / 256) + 1, 256 >> > (dynViscosity, gpu_uVelocity, gpu_vVelocity, tba, tbb, gpu_pressure, gpu_roe, tb1, tb2, tb3, tb4, fre);
+    SubFluxx5 << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_uVelocity, gpu_vVelocity, tba, tbb, gpu_pressure, gpu_roe, tb1, tb2, tb3, tb4, fre);
 
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb5);
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb2, tb6);
@@ -385,7 +362,45 @@ void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocit
     Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_temp, tb9);
     Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (gpu_temp, tba);
 
-    SubFluxx6 << < ceil(nx * ny / 256) + 1, 256 >> > (lambda, tb5, tb6, tb7, tb8, tb9, tba, fre);
+    SubFluxx6 << < ceil(nx * ny / 256) + 1, 256 >> > (tb5, tb6, tb7, tb8, tb9, tba, fre);
+}
+
+void __global__ InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity, double* temp,
+    double* energy, double* rho, double* pressure, double* rou, double* rov, double* roe, double* scp)
+{
+    // Local and global arrays use row-major storage
+    int global_i = blockDim.x * blockIdx.x + threadIdx.x;
+    int global_j = blockDim.y * blockIdx.y + threadIdx.y;
+    int global_idx = dev_nx * global_j + global_i;
+
+    if (global_i >= dev_nx || global_j >= dev_ny) { return; }
+
+    // Distances from centre of grid
+    double dx = (double)global_i * deltaX - xLength / 2.;
+    double dy = (double)global_j * deltaY - yLength / 2.;
+
+    // Masks covers points inside circle
+    if (dx * dx + dy * dy < cylinderRadSquared) {
+        cylinderMask[global_idx] = 1.;
+    }
+
+    uVelocity[global_idx] = uInf;
+    // Add small velocity perturbation
+    double vVel = 0.01 * (sin(4. * PI * (double)global_i * deltaX / xLength)
+        + sin(7. * PI * (double)global_i * deltaX / xLength))
+        * exp(-((double)global_j * deltaY - yLength / 2.) * ((double)global_j * deltaY - yLength / 2.));
+
+    vVelocity[global_idx] = vVel;
+    temp[global_idx] = tempInf;
+    pressure[global_idx] = pressInf;
+
+    double energyVal = heatCapacityV * tempInf + 0.5 * (uInf * uInf + vVel * vVel);
+    energy[global_idx] = energyVal;
+    rho[global_idx] = rhoInf;
+    rou[global_idx] = rhoInf * uInf;
+    rov[global_idx] = rhoInf * vVel;
+    roe[global_idx] = rhoInf * energyVal;
+    scp[global_idx] = 1.;
 }
 
 template<int derivative>
@@ -442,50 +457,6 @@ __global__ void Derix(const double* f, double* deriv_f) {
         break;
     }
 }
-
-//template<int derivative>
-//__global__ void Derix(const double* f, double* deriv_f) {
-//
-//    __shared__ double row_f[nx + 2];
-//
-//    int thrdsPerBlock = blockDim.x;
-//    int global_tid, shrd_mem_idx;
-//
-//    // Copy row of f into shared memory
-//    for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
-//        global_tid = ny * blockIdx.y + i;
-//        shrd_mem_idx = i + 1;
-//        row_f[shrd_mem_idx] = f[global_tid];
-//    }
-//
-//    __syncthreads();
-//
-//    // Apply periodic boundary conditions
-//    if (threadIdx.x == 0) {
-//        row_f[0] = row_f[nx];
-//        row_f[nx + 1] = row_f[1];
-//    }
-//
-//    __syncthreads();
-//
-//    // Calculate derivative using finite difference stencil
-//    for (int i = threadIdx.x; i < nx; i += thrdsPerBlock) {
-//        global_tid = ny * blockIdx.y + i;
-//        shrd_mem_idx = i + 1;
-//
-//        switch (derivative) {
-//        case 1:
-//            // Case of 1st x derivative
-//            deriv_f[global_tid] = deriv_consts[0] * (row_f[shrd_mem_idx + 1] - row_f[shrd_mem_idx - 1]);
-//            break;
-//
-//        case 2:
-//            // Case of 2nd x derivative
-//            deriv_f[global_tid] = deriv_consts[2] * (row_f[shrd_mem_idx + 1] - 2 * row_f[shrd_mem_idx] + row_f[shrd_mem_idx - 1]);
-//            break;
-//        }
-//    }
-//}
 
 template<int derivative>
 __global__ void Deriy(const double* f, double* deriv_f) {
@@ -571,50 +542,6 @@ __global__ void Deriy(const double* f, double* deriv_f) {
 
 }
 
-//template<int derivative>
-//__global__ void Deriy(const double* f, double* deriv_f) {
-//
-//    __shared__ double col_f[ny + 2];
-//
-//    int thrdsPerBlock = blockDim.x;
-//    int global_tid, shrd_mem_idx;
-//
-//    // Copy column of f into shared memory
-//    for (int i = threadIdx.x; i < ny; i += thrdsPerBlock) {
-//        global_tid = ny * i + blockIdx.x;
-//        shrd_mem_idx = i + 1;
-//        col_f[shrd_mem_idx] = f[global_tid];
-//    }
-//
-//    __syncthreads();
-//
-//    // Apply periodic boundary conditions
-//    if (threadIdx.x == 0) {
-//        col_f[0] = col_f[ny];
-//        col_f[ny + 1] = col_f[1];
-//    }
-//
-//    __syncthreads();
-//
-//    // Calculate derivative using finite difference stencil
-//    for (int i = threadIdx.x; i < ny; i += thrdsPerBlock) {
-//        global_tid = ny * i + blockIdx.x;
-//        shrd_mem_idx = i + 1;
-//
-//        switch (derivative) {
-//        case 1:
-//            // Case of 1st y derivative
-//            deriv_f[global_tid] = deriv_consts[1] * (col_f[shrd_mem_idx + 1] - col_f[shrd_mem_idx - 1]);
-//            break;
-//
-//        case 2:
-//            // Case of 2nd y derivative
-//            deriv_f[global_tid] = deriv_consts[3] * (col_f[shrd_mem_idx + 1] - 2 * col_f[shrd_mem_idx] + col_f[shrd_mem_idx - 1]);
-//            break;
-//        }
-//    }
-//}
-
 __global__ void SubFluxx1(const double* uVelocity, const double* vVelocity, const double* rou,
     double* fro, double* tb1, double* tb2) {
 
@@ -629,7 +556,7 @@ __global__ void SubFluxx1(const double* uVelocity, const double* vVelocity, cons
     
 }
 
-__global__ void SubFluxx2(const double dynViscosity, const double oneOverEta, const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
+__global__ void SubFluxx2(const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
     const double* cylinderMask, const double* uVelocity, const double* vVelocity, const double* rou, const double* rov,
     double* tb1, double* tb2, double* tba, double* fru) {
 
@@ -648,8 +575,7 @@ __global__ void SubFluxx2(const double dynViscosity, const double oneOverEta, co
     tb2[idx] = rov[idx] * cache;
 }
 
-__global__ void SubFluxx3(const double dynViscosity, const double oneOverEta,
-    const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
+__global__ void SubFluxx3(const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
     const double* cylinderMask, const double* vVelocity,
     double* tbb, double* frv) {
 
@@ -663,7 +589,7 @@ __global__ void SubFluxx3(const double dynViscosity, const double oneOverEta,
     tbb[idx] = cache;
 }
 
-__global__ void SubFluxx4(const double oneOverEta, const double xkt, const double* tb1, const double* tb2, const double* tb3, const double* tb4,
+__global__ void SubFluxx4(const double* tb1, const double* tb2, const double* tb3, const double* tb4,
     const double* uVelocity, const double* vVelocity, const double* scp, const double* cylinderMask, double* ftp) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -674,7 +600,7 @@ __global__ void SubFluxx4(const double oneOverEta, const double xkt, const doubl
 }
 
 
-__global__ void SubFluxx5(const double dynViscosity, const double* uVelocity, const double* vVelocity,
+__global__ void SubFluxx5(const double* uVelocity, const double* vVelocity,
     const double* tba, const double* tbb, const double* pressure, const double* roe,
     double* tb1, double* tb2, double* tb3, double* tb4, double* fre) {
 
@@ -696,7 +622,7 @@ __global__ void SubFluxx5(const double dynViscosity, const double* uVelocity, co
     tb4[idx] = locPres * velCache[1];
 }
 
-__global__ void SubFluxx6(const double lambda, const double* tb5, const double* tb6, const double* tb7, const double* tb8,
+__global__ void SubFluxx6(const double* tb5, const double* tb6, const double* tb7, const double* tb8,
     const double* tb9, const double* tba, double* fre) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
