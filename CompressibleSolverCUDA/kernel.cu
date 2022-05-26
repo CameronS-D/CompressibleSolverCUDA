@@ -15,6 +15,7 @@
 
 const int nx = 4097, ny = nx, nt = 100, N = nx * ny;
 const double oneOverN = 1. / (double)N;
+cudaStream_t stream[6];
 
 // Kernel launch constants for x-derivative
 const unsigned int dx_threads_x = 1024;
@@ -89,6 +90,7 @@ __global__ void Etatt(const double* rho, const double* rou, const double* rov, c
 
 int main()
 {
+    long long runtimes[nt];
     double* cylinderMask, * uVelocity, * vVelocity, * temp, * energy, * rho, * pressure, * rou, * rov, * roe, * scp;
     double* tb1, * tb2, * tb3, * tb4, * tb5, * tb6, * tb7, * tb8, * tb9, * tba, * tbb;
     double* fro, * fru, * frv, * fre, * ftp;
@@ -116,6 +118,11 @@ int main()
     HandleError(cudaMemsetAsync(prev_fro, 0.0, 5 * bytes));
     HandleError(cudaMemsetAsync(cylinderMask, 0.0, bytes));
 
+    // Initialise cudaStreams
+    for (int i = 0; i < 6; i++) {
+        cudaStreamCreate(&stream[i]);
+    }
+
     double deltaT = InitialiseDeviceConstants();
     InitialiseArrays << < dx_blockGrid, dx_threadGrid >> > (cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
 
@@ -124,35 +131,22 @@ int main()
     std::cout.flush();
     PrintAverages(0, uVelocity, vVelocity, scp);
 
-    cudaStream_t stream1;
-    cudaStream_t stream2;
-    cudaStream_t stream3;
-    cudaStream_t stream4;
-    cudaStream_t stream5;
-    cudaStreamCreate(&stream1);
-    cudaStreamCreate(&stream2);
-    cudaStreamCreate(&stream3);
-    cudaStreamCreate(&stream4);
-    cudaStreamCreate(&stream5);
-
-    long long runtimes[nt];
-
     for (int i = 1; i <= nt; i++) {
         //auto start = std::chrono::high_resolution_clock::now();
 
         Fluxx(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp,
             tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8, tb9, tba, tbb, fro, fru, frv, fre, ftp);
   
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream1 >> > (fro, prev_fro, rho);
-        cudaMemcpyAsync(prev_fro, fro, bytes, cudaMemcpyDeviceToDevice, stream1);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream2 >> > (fru, prev_fru, rou);
-        cudaMemcpyAsync(prev_fru, fru, bytes, cudaMemcpyDeviceToDevice, stream2);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream3 >> > (frv, prev_frv, rov);
-        cudaMemcpyAsync(prev_frv, frv, bytes, cudaMemcpyDeviceToDevice, stream3);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream4 >> > (fre, prev_fre, roe);
-        cudaMemcpyAsync(prev_fre, fre, bytes, cudaMemcpyDeviceToDevice, stream4);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream5 >> > (ftp, prev_ftp, scp);
-        cudaMemcpyAsync(prev_ftp, ftp, bytes, cudaMemcpyDeviceToDevice, stream5);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (fro, prev_fro, rho);
+        cudaMemcpyAsync(prev_fro, fro, bytes, cudaMemcpyDeviceToDevice, stream[0]);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[1] >> > (fru, prev_fru, rou);
+        cudaMemcpyAsync(prev_fru, fru, bytes, cudaMemcpyDeviceToDevice, stream[1]);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[2] >> > (frv, prev_frv, rov);
+        cudaMemcpyAsync(prev_frv, frv, bytes, cudaMemcpyDeviceToDevice, stream[2]);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[3] >> > (fre, prev_fre, roe);
+        cudaMemcpyAsync(prev_fre, fre, bytes, cudaMemcpyDeviceToDevice, stream[3]);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[4] >> > (ftp, prev_ftp, scp);
+        cudaMemcpyAsync(prev_ftp, ftp, bytes, cudaMemcpyDeviceToDevice, stream[4]);
 
         Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (rho, rou, rov, roe, uVelocity, vVelocity, pressure, temp);
 
@@ -272,55 +266,55 @@ void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* t
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
     double* tba, double* tbb, double* fro, double* fru, double* frv, double* fre, double* ftp) {
 
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (rou, tb1);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (rov, tb2);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (rou, tb1);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[1] >> > (rov, tb2);
 
     SubFluxx1 << < ceil(nx * ny / 256) + 1, 256 >> > (uVelocity, vVelocity, rou, fro, tb1, tb2);
 
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (pressure, tb3);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb4);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb2, tb5);
-    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (uVelocity, tb6);
-    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (uVelocity, tb7);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (vVelocity, tb8);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb8, tb9);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (pressure, tb3);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[1] >> > (tb1, tb4);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[2] >> > (tb2, tb5);
+    Derix<2> << < dx_blockGrid, dx_threadGrid, 0, stream[3] >> > (uVelocity, tb6);
+    Deriy<2> << < dy_blockGrid, dy_threadGrid, 0, stream[4] >> > (uVelocity, tb7);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[5] >> > (vVelocity, tb8);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[5] >> > (tb8, tb9);
 
     SubFluxx2 << < ceil(nx * ny / 256) + 1, 256 >> > (tb3, tb4, tb5, tb6, tb7, tb9,
         cylinderMask, uVelocity, vVelocity, rou, rov, tb1, tb2, tba, fru);
 
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (pressure, tb3);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb4);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb2, tb5);
-    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (vVelocity, tb6);
-    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (vVelocity, tb7);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (uVelocity, tb8);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb8, tb9);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[0] >> > (pressure, tb3);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[1] >> > (tb1, tb4);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[2] >> > (tb2, tb5);
+    Derix<2> << < dx_blockGrid, dx_threadGrid, 0, stream[3] >> > (vVelocity, tb6);
+    Deriy<2> << < dy_blockGrid, dy_threadGrid, 0, stream[4] >> > (vVelocity, tb7);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[5] >> > (uVelocity, tb8);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[5] >> > (tb8, tb9);
 
     SubFluxx3 << < ceil(nx * ny / 256) + 1, 256 >> > (tb3, tb4, tb5, tb6, tb7, tb9,
         cylinderMask, vVelocity, tbb, frv);
 
     // Equation for the tempature
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (scp, tb1);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (scp, tb2);
-    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (scp, tb3);
-    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (scp, tb4);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (scp, tb1);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[1] >> > (scp, tb2);
+    Derix<2> << < dx_blockGrid, dx_threadGrid, 0, stream[2] >> > (scp, tb3);
+    Deriy<2> << < dy_blockGrid, dy_threadGrid, 0, stream[3] >> > (scp, tb4);
 
     SubFluxx4 << < ceil(nx * ny / 256) + 1, 256 >> > (tb1, tb2, tb3, tb4,
         uVelocity, vVelocity, scp, cylinderMask, ftp);
 
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (uVelocity, tb1);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (vVelocity, tb2);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (uVelocity, tb3);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (vVelocity, tb4);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (uVelocity, tb1);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[1] >> > (vVelocity, tb2);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[2] >> > (uVelocity, tb3);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[3] >> > (vVelocity, tb4);
 
     SubFluxx5 << < ceil(nx * ny / 256) + 1, 256 >> > (uVelocity, vVelocity, tba, tbb, pressure, roe, tb1, tb2, tb3, tb4, fre);
 
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb5);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb2, tb6);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb3, tb7);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb4, tb8);
-    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (temp, tb9);
-    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (temp, tba);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (tb1, tb5);
+    Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[1] >> > (tb2, tb6);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[2] >> > (tb3, tb7);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[3] >> > (tb4, tb8);
+    Derix<2> << < dx_blockGrid, dx_threadGrid, 0, stream[4] >> > (temp, tb9);
+    Deriy<2> << < dy_blockGrid, dy_threadGrid, 0, stream[5] >> > (temp, tba);
 
     SubFluxx6 << < ceil(nx * ny / 256) + 1, 256 >> > (tb5, tb6, tb7, tb8, tb9, tba, fre);
 }
