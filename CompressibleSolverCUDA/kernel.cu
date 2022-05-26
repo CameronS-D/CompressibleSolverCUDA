@@ -67,25 +67,25 @@ void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* t
 
 __global__ void InitialiseArrays(double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*);
 template<int>
-__global__ void Derix(const double*, double*);
+__global__ void Derix(const double* __restrict__, double*);
 template<int>
-__global__ void Deriy(const double*, double*);
-__global__ void SubFluxx1(const double*, const double*, const double*, double*, double*, double*);
-__global__ void SubFluxx2(const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
-    const double* cylinderMask, const double* uVelocity, const double* vVelocity, const double* rou, const double* rov,
+__global__ void Deriy(const double* __restrict__, double*);
+__global__ void SubFluxx1(const double* __restrict__, const double* __restrict__, const double* __restrict__, double*, double*, double*);
+__global__ void SubFluxx2(const double* __restrict__ tb3, const double* __restrict__ tb4, const double* __restrict__ tb5, const double* __restrict__ tb6, const double* __restrict__ tb7, const double* __restrict__ tb9,
+    const double* __restrict__ cylinderMask, const double* __restrict__ uVelocity, const double* __restrict__ vVelocity, const double* __restrict__ rou, const double* __restrict__ rov,
     double* tb1, double* tb2, double* tba, double* fru);
-__global__ void SubFluxx3(const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
-    const double* cylinderMask, const double* vVelocity,
+__global__ void SubFluxx3(const double* __restrict__ tb3, const double* __restrict__ tb4, const double* __restrict__ tb5, const double* __restrict__ tb6, const double* __restrict__ tb7, const double* __restrict__ tb9,
+    const double* __restrict__ cylinderMask, const double* __restrict__ vVelocity,
     double* tbb, double* frv);
-__global__ void SubFluxx4(const double* tb1, const double* tb2, const double* tb3, const double* tb4,
-    const double* uVelocity, const double* vVelocity, const double* scp, const double* cylinderMask, double* ftp);
-__global__ void SubFluxx5(const double* uVelocity, const double* vVelocity,
-    const double* tba, const double* tbb, const double* pressure, const double* roe,
+__global__ void SubFluxx4(const double* __restrict__ tb1, const double* __restrict__ tb2, const double* __restrict__ tb3, const double* __restrict__ tb4,
+    const double* __restrict__ uVelocity, const double* __restrict__ vVelocity, const double* __restrict__ scp, const double* __restrict__ cylinderMask, double* ftp);
+__global__ void SubFluxx5(const double* __restrict__ uVelocity, const double* __restrict__ vVelocity,
+    const double* __restrict__ tba, const double* __restrict__ tbb, const double* __restrict__ pressure, const double* __restrict__ roe,
     double* tb1, double* tb2, double* tb3, double* tb4, double* fre);
-__global__ void SubFluxx6(const double* tb5, const double* tb6, const double* tb7, const double* tb8,
-    const double* tb9, const double* tba, double* fre);
-__global__ void Adams(const double* phi_current, double* phi_previous, double* phi_integral);
-__global__ void Etatt(const double* rho, const double* rou, const double* rov, const double* roe,
+__global__ void SubFluxx6(const double* __restrict__ tb5, const double* __restrict__ tb6, const double* __restrict__ tb7, const double* __restrict__ tb8,
+    const double* __restrict__ tb9, const double* __restrict__ tba, double* fre);
+__global__ void Adams(const double* __restrict__ phi_current, const double* __restrict__ phi_previous, double* phi_integral);
+__global__ void Etatt(const double* __restrict__ rho, const double* __restrict__ rou, const double* __restrict__ rov, const double* __restrict__ roe,
     double* uVelocity, double* vVelocity, double* pressure, double* temp);
 
 int main()
@@ -358,7 +358,7 @@ void __global__ InitialiseArrays(double* cylinderMask, double* uVelocity, double
 }
 
 template<int derivative>
-__global__ void Derix(const double* f, double* deriv_f) {
+__global__ void Derix(const double* __restrict__ f, double* deriv_f) {
 
     // Local and global arrays use row-major storage
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -413,7 +413,7 @@ __global__ void Derix(const double* f, double* deriv_f) {
 }
 
 template<int derivative>
-__global__ void Deriy(const double* f, double* deriv_f) {
+__global__ void Deriy(const double* __restrict__ f, double* deriv_f) {
 
     // Local and global arrays use row-major storage
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -496,7 +496,7 @@ __global__ void Deriy(const double* f, double* deriv_f) {
 
 }
 
-__global__ void SubFluxx1(const double* uVelocity, const double* vVelocity, const double* rou,
+__global__ void SubFluxx1(const double* __restrict__ uVelocity, const double* __restrict__ vVelocity, const double* __restrict__ rou,
     double* fro, double* tb1, double* tb2) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -510,8 +510,9 @@ __global__ void SubFluxx1(const double* uVelocity, const double* vVelocity, cons
     
 }
 
-__global__ void SubFluxx2(const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
-    const double* cylinderMask, const double* uVelocity, const double* vVelocity, const double* rou, const double* rov,
+__global__ void SubFluxx2(const double* __restrict__ tb3, const double* __restrict__ tb4, const double* __restrict__ tb5, const double* __restrict__ tb6,
+    const double* __restrict__ tb7, const double* __restrict__ tb9, const double* __restrict__ cylinderMask, const double* __restrict__ uVelocity,
+    const double* __restrict__ vVelocity, const double* __restrict__ rou, const double* __restrict__ rov,
     double* tb1, double* tb2, double* tba, double* fru) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -529,8 +530,9 @@ __global__ void SubFluxx2(const double* tb3, const double* tb4, const double* tb
     tb2[idx] = rov[idx] * cache;
 }
 
-__global__ void SubFluxx3(const double* tb3, const double* tb4, const double* tb5, const double* tb6, const double* tb7, const double* tb9,
-    const double* cylinderMask, const double* vVelocity,
+__global__ void SubFluxx3(const double* __restrict__ tb3, const double* __restrict__ tb4, const double* __restrict__ tb5,
+    const double* __restrict__ tb6, const double* __restrict__ tb7, const double* __restrict__ tb9,
+    const double* __restrict__ cylinderMask, const double* __restrict__ vVelocity,
     double* tbb, double* frv) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -543,8 +545,9 @@ __global__ void SubFluxx3(const double* tb3, const double* tb4, const double* tb
     tbb[idx] = cache;
 }
 
-__global__ void SubFluxx4(const double* tb1, const double* tb2, const double* tb3, const double* tb4,
-    const double* uVelocity, const double* vVelocity, const double* scp, const double* cylinderMask, double* ftp) {
+__global__ void SubFluxx4(const double* __restrict__ tb1, const double* __restrict__ tb2, const double* __restrict__ tb3, const double* __restrict__ tb4,
+    const double* __restrict__ uVelocity, const double* __restrict__ vVelocity, const double* __restrict__ scp, const double* __restrict__ cylinderMask,
+    double* ftp) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= dev_nx * dev_ny) { return; }
@@ -554,8 +557,8 @@ __global__ void SubFluxx4(const double* tb1, const double* tb2, const double* tb
 }
 
 
-__global__ void SubFluxx5(const double* uVelocity, const double* vVelocity,
-    const double* tba, const double* tbb, const double* pressure, const double* roe,
+__global__ void SubFluxx5(const double* __restrict__ uVelocity, const double* __restrict__ vVelocity,
+    const double* __restrict__ tba, const double* __restrict__ tbb, const double* __restrict__ pressure, const double* __restrict__ roe,
     double* tb1, double* tb2, double* tb3, double* tb4, double* fre) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -576,8 +579,8 @@ __global__ void SubFluxx5(const double* uVelocity, const double* vVelocity,
     tb4[idx] = locPres * velCache[1];
 }
 
-__global__ void SubFluxx6(const double* tb5, const double* tb6, const double* tb7, const double* tb8,
-    const double* tb9, const double* tba, double* fre) {
+__global__ void SubFluxx6(const double* __restrict__ tb5, const double* __restrict__ tb6, const double* __restrict__ tb7, const double* __restrict__ tb8,
+    const double* __restrict__ tb9, const double* __restrict__ tba, double* fre) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= dev_nx * dev_ny) { return; }
@@ -585,7 +588,7 @@ __global__ void SubFluxx6(const double* tb5, const double* tb6, const double* tb
     fre[idx] = fre[idx] - tb5[idx] - tb6[idx] - tb7[idx] - tb8[idx] + lambda * (tb9[idx] + tba[idx]);
 }
 
-__global__ void Adams(const double* phi_current, double* phi_previous, double* phi_integral) {
+__global__ void Adams(const double* __restrict__ phi_current, const double* __restrict__ phi_previous, double* phi_integral) {
 
     // Local and global arrays use row-major storage
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -598,7 +601,7 @@ __global__ void Adams(const double* phi_current, double* phi_previous, double* p
 
 }
 
-__global__ void Etatt(const double* rho, const double* rou, const double* rov, const double* roe,
+__global__ void Etatt(const double* __restrict__ rho, const double* __restrict__ rou, const double* __restrict__ rov, const double* __restrict__ roe,
     double* uVelocity, double* vVelocity, double* pressure, double* temp) {
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
