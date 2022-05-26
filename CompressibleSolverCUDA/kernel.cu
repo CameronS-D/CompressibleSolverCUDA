@@ -59,8 +59,8 @@ void HandleError(cudaError);
 double InitialiseDeviceConstants();
 void PrintAverages(const int, const double*, const double*, const double*);
 void WriteToFile(const int length, long long runtimes[]);
-void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocity, double* gpu_temp, double* gpu_energy,
-    double* gpu_rho, double* gpu_pressure, double* gpu_rou, double* gpu_rov, double* gpu_roe, double* gpu_scp,
+void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* temp, double* energy,
+    double* rho, double* pressure, double* rou, double* rov, double* roe, double* scp,
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
     double* tba, double* tbb, double* fro, double* fru, double* frv, double* fre, double* ftp);
 
@@ -89,50 +89,34 @@ __global__ void Etatt(const double* rho, const double* rou, const double* rov, c
 
 int main()
 {
-    const int numOfVariables = 11;
     double* cylinderMask, * uVelocity, * vVelocity, * temp, * energy, * rho, * pressure, * rou, * rov, * roe, * scp;
-    double** variableList[numOfVariables] = { &cylinderMask, &uVelocity, &vVelocity, &temp, &energy, &rho, &pressure, &rou, &rov, &roe, &scp };
-
-    double* tb1, * tb2, * tb3, * tb4, * tb5, * tb6, * tb7, * tb8, * tb9;
-    double* tba, * tbb, * fro, * fru, * frv, * fre, * ftp;
+    double* tb1, * tb2, * tb3, * tb4, * tb5, * tb6, * tb7, * tb8, * tb9, * tba, * tbb;
+    double* fro, * fru, * frv, * fre, * ftp;
     double* prev_fro, * prev_fru, * prev_frv, * prev_fre, * prev_ftp;
 
-    const unsigned long int bytes = nx * ny * sizeof(double);
-    HandleError(cudaMalloc(&tb1, bytes));
-    HandleError(cudaMalloc(&tb2, bytes));
-    HandleError(cudaMalloc(&tb3, bytes));
-    HandleError(cudaMalloc(&tb4, bytes));
-    HandleError(cudaMalloc(&tb5, bytes));
-    HandleError(cudaMalloc(&tb6, bytes));
-    HandleError(cudaMalloc(&tb7, bytes));
-    HandleError(cudaMalloc(&tb8, bytes));
-    HandleError(cudaMalloc(&tb9, bytes));
-    HandleError(cudaMalloc(&tba, bytes));
-    HandleError(cudaMalloc(&tbb, bytes));
-    HandleError(cudaMalloc(&fro, bytes));
-    HandleError(cudaMalloc(&fru, bytes));
-    HandleError(cudaMalloc(&frv, bytes));
-    HandleError(cudaMalloc(&fre, bytes));
-    HandleError(cudaMalloc(&ftp, bytes));
-    HandleError(cudaMalloc(&prev_fro, bytes));
-    HandleError(cudaMalloc(&prev_fru, bytes));
-    HandleError(cudaMalloc(&prev_frv, bytes));
-    HandleError(cudaMalloc(&prev_fre, bytes));
-    HandleError(cudaMalloc(&prev_ftp, bytes));
-    HandleError(cudaMemsetAsync(prev_fro, 0.0, bytes));
-    HandleError(cudaMemsetAsync(prev_fru, 0.0, bytes));
-    HandleError(cudaMemsetAsync(prev_frv, 0.0, bytes));
-    HandleError(cudaMemsetAsync(prev_fre, 0.0, bytes));
-    HandleError(cudaMemsetAsync(prev_ftp, 0.0, bytes));
+    double** N_sizedArrays[] = {
+        &tb1, &tb2, &tb3, &tb4, &tb5, &tb6, &tb7, &tb8, &tb9, &tba, &tbb,
+        &fro, &fru, &frv, &fre, &ftp,
+        &prev_fro, &prev_fru, &prev_frv, &prev_fre, &prev_ftp,
+        &cylinderMask, &uVelocity, &vVelocity, &temp, &energy, &rho, &pressure, &rou, &rov, &roe, &scp
+    };
 
-    double deltaT = InitialiseDeviceConstants();
+    double* deviceArrays;
+    const unsigned long int bytes = N * sizeof(double);
+    const unsigned long long numOfArrays = sizeof(N_sizedArrays) / sizeof(*N_sizedArrays);
 
-    for (int i = 0; i < numOfVariables; i++) {
-        HandleError(cudaMalloc((void**)variableList[i], bytes));
+    // Allocate one large chunk of memory, then divide into the separate arrays
+    HandleError(cudaMalloc(&deviceArrays, numOfArrays * bytes));
+
+    for (int i = 0; i < numOfArrays; i++) {
+        *N_sizedArrays[i] = deviceArrays + i * N;
     }
 
+    // Initilaise all 5 prev_f arrays to 0
+    HandleError(cudaMemsetAsync(prev_fro, 0.0, 5 * bytes));
     HandleError(cudaMemsetAsync(cylinderMask, 0.0, bytes));
 
+    double deltaT = InitialiseDeviceConstants();
     InitialiseArrays << < dx_blockGrid, dx_threadGrid >> > (cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
 
     printf("The time step of the simulation is %.9E \n", deltaT);
@@ -179,32 +163,8 @@ int main()
         PrintAverages(i, uVelocity, vVelocity, scp);
     }
 
-    // Free memory on both host and device
-    for (int i = 0; i < numOfVariables; i++) {
-        HandleError(cudaFree(*variableList[i]) );
-    }
-
-    HandleError(cudaFree(tb1));
-    HandleError(cudaFree(tb2));
-    HandleError(cudaFree(tb3));
-    HandleError(cudaFree(tb4));
-    HandleError(cudaFree(tb5));
-    HandleError(cudaFree(tb6));
-    HandleError(cudaFree(tb7));
-    HandleError(cudaFree(tb8));
-    HandleError(cudaFree(tb9));
-    HandleError(cudaFree(tba));
-    HandleError(cudaFree(tbb));
-    HandleError(cudaFree(fro));
-    HandleError(cudaFree(fru));
-    HandleError(cudaFree(frv));
-    HandleError(cudaFree(fre));
-    HandleError(cudaFree(ftp));
-    HandleError(cudaFree(prev_fro));
-    HandleError(cudaFree(prev_fru));
-    HandleError(cudaFree(prev_frv));
-    HandleError(cudaFree(prev_fre));
-    HandleError(cudaFree(prev_ftp));
+    // Free memory on host memory
+    HandleError(cudaFree(deviceArrays));
 
     //WriteToFile(nt, runtimes);
 
@@ -277,11 +237,11 @@ void HandleError(cudaError error) {
     }
 }
 
-void PrintAverages(const int timestep, const double* gpu_uVelocity, const double* gpu_vVelocity, const double* gpu_scp) {
+void PrintAverages(const int timestep, const double* uVelocity, const double* vVelocity, const double* scp) {
 
     double mean[3];
     thrust::device_vector<double> arrayVect;
-    const double* arrays[] = { gpu_uVelocity, gpu_vVelocity, gpu_scp };
+    const double* arrays[] = { uVelocity, vVelocity, scp };
 
     for (int i = 0; i < 3; i++) {
         arrayVect = thrust::device_vector<double>(arrays[i], arrays[i] + N);
@@ -307,60 +267,60 @@ void WriteToFile(const int length, long long runtimes[]) {
     }
 }
 
-void Fluxx(double* gpu_cylinderMask, double* gpu_uVelocity, double* gpu_vVelocity, double* gpu_temp, double* gpu_energy, 
-    double* gpu_rho, double* gpu_pressure, double* gpu_rou, double* gpu_rov, double* gpu_roe, double* gpu_scp,
+void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* temp, double* energy, 
+    double* rho, double* pressure, double* rou, double* rov, double* roe, double* scp,
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
     double* tba, double* tbb, double* fro, double* fru, double* frv, double* fre, double* ftp) {
 
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_rou, tb1);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (gpu_rov, tb2);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (rou, tb1);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (rov, tb2);
 
-    SubFluxx1 << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_uVelocity, gpu_vVelocity, gpu_rou, fro, tb1, tb2);
+    SubFluxx1 << < ceil(nx * ny / 256) + 1, 256 >> > (uVelocity, vVelocity, rou, fro, tb1, tb2);
 
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_pressure, tb3);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (pressure, tb3);
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb4);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb2, tb5);
-    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_uVelocity, tb6);
-    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (gpu_uVelocity, tb7);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_vVelocity, tb8);
+    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (uVelocity, tb6);
+    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (uVelocity, tb7);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (vVelocity, tb8);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb8, tb9);
 
     SubFluxx2 << < ceil(nx * ny / 256) + 1, 256 >> > (tb3, tb4, tb5, tb6, tb7, tb9,
-        gpu_cylinderMask, gpu_uVelocity, gpu_vVelocity, gpu_rou, gpu_rov, tb1, tb2, tba, fru);
+        cylinderMask, uVelocity, vVelocity, rou, rov, tb1, tb2, tba, fru);
 
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (gpu_pressure, tb3);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (pressure, tb3);
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb4);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb2, tb5);
-    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_vVelocity, tb6);
-    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (gpu_vVelocity, tb7);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_uVelocity, tb8);
+    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (vVelocity, tb6);
+    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (vVelocity, tb7);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (uVelocity, tb8);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb8, tb9);
 
     SubFluxx3 << < ceil(nx * ny / 256) + 1, 256 >> > (tb3, tb4, tb5, tb6, tb7, tb9,
-        gpu_cylinderMask, gpu_vVelocity, tbb, frv);
+        cylinderMask, vVelocity, tbb, frv);
 
     // Equation for the tempature
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_scp, tb1);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (gpu_scp, tb2);
-    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_scp, tb3);
-    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (gpu_scp, tb4);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (scp, tb1);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (scp, tb2);
+    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (scp, tb3);
+    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (scp, tb4);
 
     SubFluxx4 << < ceil(nx * ny / 256) + 1, 256 >> > (tb1, tb2, tb3, tb4,
-        gpu_uVelocity, gpu_vVelocity, gpu_scp, gpu_cylinderMask, ftp);
+        uVelocity, vVelocity, scp, cylinderMask, ftp);
 
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_uVelocity, tb1);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (gpu_vVelocity, tb2);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (gpu_uVelocity, tb3);
-    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (gpu_vVelocity, tb4);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (uVelocity, tb1);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (vVelocity, tb2);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (uVelocity, tb3);
+    Derix<1> << < dx_blockGrid, dx_threadGrid >> > (vVelocity, tb4);
 
-    SubFluxx5 << < ceil(nx * ny / 256) + 1, 256 >> > (gpu_uVelocity, gpu_vVelocity, tba, tbb, gpu_pressure, gpu_roe, tb1, tb2, tb3, tb4, fre);
+    SubFluxx5 << < ceil(nx * ny / 256) + 1, 256 >> > (uVelocity, vVelocity, tba, tbb, pressure, roe, tb1, tb2, tb3, tb4, fre);
 
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb1, tb5);
     Derix<1> << < dx_blockGrid, dx_threadGrid >> > (tb2, tb6);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb3, tb7);
     Deriy<1> << < dy_blockGrid, dy_threadGrid >> > (tb4, tb8);
-    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (gpu_temp, tb9);
-    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (gpu_temp, tba);
+    Derix<2> << < dx_blockGrid, dx_threadGrid >> > (temp, tb9);
+    Deriy<2> << < dy_blockGrid, dy_threadGrid >> > (temp, tba);
 
     SubFluxx6 << < ceil(nx * ny / 256) + 1, 256 >> > (tb5, tb6, tb7, tb8, tb9, tba, fre);
 }
