@@ -58,7 +58,7 @@ __device__ __constant__ double lambda;
 
 void HandleError(cudaError);
 double InitialiseDeviceConstants();
-void PrintAverages(const int, const double*, const double*, const double*);
+void PrintAverages(const int timestep, const thrust::device_ptr<double> avgArrays[]);
 void WriteToFile(const int length, long long runtimes[]);
 void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* temp, double* energy,
     double* rho, double* pressure, double* rou, double* rov, double* roe, double* scp,
@@ -100,7 +100,8 @@ int main()
         &tb1, &tb2, &tb3, &tb4, &tb5, &tb6, &tb7, &tb8, &tb9, &tba, &tbb,
         &fro, &fru, &frv, &fre, &ftp,
         &prev_fro, &prev_fru, &prev_frv, &prev_fre, &prev_ftp,
-        &cylinderMask, &uVelocity, &vVelocity, &temp, &energy, &rho, &pressure, &rou, &rov, &roe, &scp
+        &rho, &rou, &rov, &roe, &scp,
+        &cylinderMask, &uVelocity, &vVelocity, &temp, &energy,  &pressure
     };
 
     double* deviceArrays;
@@ -123,38 +124,42 @@ int main()
         cudaStreamCreate(&stream[i]);
     }
 
+    // Declare thrust pointers for efficiently calculating average of these arrays;
+    thrust::device_ptr<double> thrust_uVel(uVelocity);
+    thrust::device_ptr<double> thrust_vVel(vVelocity);
+    thrust::device_ptr<double> thrust_scp(scp);
+    const thrust::device_ptr<double> avgArrays[] = { thrust_uVel, thrust_vVel, thrust_scp };
+
+
     double deltaT = InitialiseDeviceConstants();
     InitialiseArrays << < dx_blockGrid, dx_threadGrid >> > (cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
 
     printf("The time step of the simulation is %.9E \n", deltaT);
     printf("Average values at t=");
     std::cout.flush();
-    PrintAverages(0, uVelocity, vVelocity, scp);
+
+
+
+    PrintAverages(0, avgArrays);
 
     for (int i = 1; i <= nt; i++) {
         //auto start = std::chrono::high_resolution_clock::now();
 
         Fluxx(cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp,
             tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8, tb9, tba, tbb, fro, fru, frv, fre, ftp);
-  
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (fro, prev_fro, rho);
-        cudaMemcpyAsync(prev_fro, fro, bytes, cudaMemcpyDeviceToDevice, stream[0]);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[1] >> > (fru, prev_fru, rou);
-        cudaMemcpyAsync(prev_fru, fru, bytes, cudaMemcpyDeviceToDevice, stream[1]);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[2] >> > (frv, prev_frv, rov);
-        cudaMemcpyAsync(prev_frv, frv, bytes, cudaMemcpyDeviceToDevice, stream[2]);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[3] >> > (fre, prev_fre, roe);
-        cudaMemcpyAsync(prev_fre, fre, bytes, cudaMemcpyDeviceToDevice, stream[3]);
-        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[4] >> > (ftp, prev_ftp, scp);
-        cudaMemcpyAsync(prev_ftp, ftp, bytes, cudaMemcpyDeviceToDevice, stream[4]);
 
-        Etatt << < ceil(nx * ny / 256) + 1, 256 >> > (rho, rou, rov, roe, uVelocity, vVelocity, pressure, temp);
+        Adams << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (fro, prev_fro, rho);
+
+        cudaStreamSynchronize(stream[0]);
+        cudaMemcpyAsync(prev_fro, fro, 5 * bytes, cudaMemcpyDeviceToDevice, stream[1]);
+        Etatt << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (rho, rou, rov, roe, uVelocity, vVelocity, pressure, temp);
+        
 
         //cudaDeviceSynchronize();
         //auto stop = std::chrono::high_resolution_clock::now();
         //runtimes[i - 1] = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count();
 
-        PrintAverages(i, uVelocity, vVelocity, scp);
+        PrintAverages(i, avgArrays);
     }
 
     // Free memory on host memory
@@ -231,15 +236,11 @@ void HandleError(cudaError error) {
     }
 }
 
-void PrintAverages(const int timestep, const double* uVelocity, const double* vVelocity, const double* scp) {
+void PrintAverages(const int timestep, const thrust::device_ptr<double> avgArrays[]) {
 
     double mean[3];
-    thrust::device_vector<double> arrayVect;
-    const double* arrays[] = { uVelocity, vVelocity, scp };
-
     for (int i = 0; i < 3; i++) {
-        arrayVect = thrust::device_vector<double>(arrays[i], arrays[i] + N);
-        mean[i] = thrust::reduce(arrayVect.begin(), arrayVect.end(), 0., thrust::plus<double>()) * oneOverN;
+        mean[i] = thrust::reduce(avgArrays[i], avgArrays[i] + N, 0., thrust::plus<double>()) * oneOverN;
     }   
 
     printf("%i %.9G %.9E %.9G \n", timestep, mean[0], mean[1], mean[2]);
@@ -266,10 +267,13 @@ void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* t
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
     double* tba, double* tbb, double* fro, double* fru, double* frv, double* fre, double* ftp) {
 
+    cudaStreamSynchronize(stream[0]);
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (rou, tb1);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[1] >> > (rov, tb2);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[2] >> > (rov, tb2);
 
-    SubFluxx1 << < ceil(nx * ny / 256) + 1, 256 >> > (uVelocity, vVelocity, rou, fro, tb1, tb2);
+    cudaDeviceSynchronize();
+    SubFluxx1 << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (uVelocity, vVelocity, rou, fro, tb1, tb2);
+    cudaStreamSynchronize(stream[0]);
 
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (pressure, tb3);
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[1] >> > (tb1, tb4);
@@ -279,8 +283,10 @@ void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* t
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[5] >> > (vVelocity, tb8);
     Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[5] >> > (tb8, tb9);
 
-    SubFluxx2 << < ceil(nx * ny / 256) + 1, 256 >> > (tb3, tb4, tb5, tb6, tb7, tb9,
+    cudaDeviceSynchronize();
+    SubFluxx2 << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (tb3, tb4, tb5, tb6, tb7, tb9,
         cylinderMask, uVelocity, vVelocity, rou, rov, tb1, tb2, tba, fru);
+    cudaStreamSynchronize(stream[0]);
 
     Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[0] >> > (pressure, tb3);
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[1] >> > (tb1, tb4);
@@ -290,8 +296,10 @@ void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* t
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[5] >> > (uVelocity, tb8);
     Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[5] >> > (tb8, tb9);
 
-    SubFluxx3 << < ceil(nx * ny / 256) + 1, 256 >> > (tb3, tb4, tb5, tb6, tb7, tb9,
+    cudaDeviceSynchronize();
+    SubFluxx3 << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (tb3, tb4, tb5, tb6, tb7, tb9,
         cylinderMask, vVelocity, tbb, frv);
+    cudaStreamSynchronize(stream[0]);
 
     // Equation for the tempature
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (scp, tb1);
@@ -299,15 +307,19 @@ void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* t
     Derix<2> << < dx_blockGrid, dx_threadGrid, 0, stream[2] >> > (scp, tb3);
     Deriy<2> << < dy_blockGrid, dy_threadGrid, 0, stream[3] >> > (scp, tb4);
 
-    SubFluxx4 << < ceil(nx * ny / 256) + 1, 256 >> > (tb1, tb2, tb3, tb4,
+    cudaDeviceSynchronize();
+    SubFluxx4 << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (tb1, tb2, tb3, tb4,
         uVelocity, vVelocity, scp, cylinderMask, ftp);
+    cudaStreamSynchronize(stream[0]);
 
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (uVelocity, tb1);
     Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[1] >> > (vVelocity, tb2);
     Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[2] >> > (uVelocity, tb3);
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[3] >> > (vVelocity, tb4);
 
-    SubFluxx5 << < ceil(nx * ny / 256) + 1, 256 >> > (uVelocity, vVelocity, tba, tbb, pressure, roe, tb1, tb2, tb3, tb4, fre);
+    cudaDeviceSynchronize();
+    SubFluxx5 << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (uVelocity, vVelocity, tba, tbb, pressure, roe, tb1, tb2, tb3, tb4, fre);
+    cudaStreamSynchronize(stream[0]);
 
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (tb1, tb5);
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[1] >> > (tb2, tb6);
@@ -316,7 +328,8 @@ void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* t
     Derix<2> << < dx_blockGrid, dx_threadGrid, 0, stream[4] >> > (temp, tb9);
     Deriy<2> << < dy_blockGrid, dy_threadGrid, 0, stream[5] >> > (temp, tba);
 
-    SubFluxx6 << < ceil(nx * ny / 256) + 1, 256 >> > (tb5, tb6, tb7, tb8, tb9, tba, fre);
+    cudaDeviceSynchronize();
+    SubFluxx6 << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (tb5, tb6, tb7, tb8, tb9, tba, fre);
 }
 
 void __global__ InitialiseArrays(double* cylinderMask, double* uVelocity, double* vVelocity, double* temp,
@@ -597,8 +610,10 @@ __global__ void Adams(const double* __restrict__ phi_current, const double* __re
 
     if (global_i >= dev_nx || global_j >= dev_ny) { return; }
 
-    phi_integral[global_idx] += adams_consts[0] * phi_current[global_idx] - adams_consts[1] * phi_previous[global_idx];
-
+    for (int i = 0; i < 5; i++) {
+        phi_integral[global_idx] += adams_consts[0] * phi_current[global_idx] - adams_consts[1] * phi_previous[global_idx];
+        global_idx += dev_N;
+    }
 }
 
 __global__ void Etatt(const double* __restrict__ rho, const double* __restrict__ rou, const double* __restrict__ rov, const double* __restrict__ roe,
