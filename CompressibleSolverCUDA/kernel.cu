@@ -84,7 +84,7 @@ __global__ void SubFluxx5(const double* __restrict__ uVelocity, const double* __
     double* tb1, double* tb2, double* tb3, double* tb4, double* fre);
 __global__ void SubFluxx6(const double* __restrict__ tb5, const double* __restrict__ tb6, const double* __restrict__ tb7, const double* __restrict__ tb8,
     const double* __restrict__ tb9, const double* __restrict__ tba, double* fre);
-__global__ void Adams(const double* __restrict__ phi_current, const double* __restrict__ phi_previous, double* phi_integral);
+__global__ void Adams(const double* __restrict__ phi_current, double* phi_previous, double* phi_integral);
 __global__ void Etatt(const double* __restrict__ rho, const double* __restrict__ rou, const double* __restrict__ rov, const double* __restrict__ roe,
     double* uVelocity, double* vVelocity, double* pressure, double* temp);
 
@@ -130,16 +130,12 @@ int main()
     thrust::device_ptr<double> thrust_scp(scp);
     const thrust::device_ptr<double> avgArrays[] = { thrust_uVel, thrust_vVel, thrust_scp };
 
-
     double deltaT = InitialiseDeviceConstants();
     InitialiseArrays << < dx_blockGrid, dx_threadGrid >> > (cylinderMask, uVelocity, vVelocity, temp, energy, rho, pressure, rou, rov, roe, scp);
 
     printf("The time step of the simulation is %.9E \n", deltaT);
     printf("Average values at t=");
     std::cout.flush();
-
-
-
     PrintAverages(0, avgArrays);
 
     for (int i = 1; i <= nt; i++) {
@@ -149,13 +145,8 @@ int main()
             tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8, tb9, tba, tbb, fro, fru, frv, fre, ftp);
 
         Adams << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (fro, prev_fro, rho);
-
-        cudaStreamSynchronize(stream[0]);
-        cudaMemcpyAsync(prev_fro, fro, 5 * bytes, cudaMemcpyDeviceToDevice, stream[1]);
         Etatt << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (rho, rou, rov, roe, uVelocity, vVelocity, pressure, temp);
         
-
-        //cudaDeviceSynchronize();
         //auto stop = std::chrono::high_resolution_clock::now();
         //runtimes[i - 1] = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count();
 
@@ -601,7 +592,7 @@ __global__ void SubFluxx6(const double* __restrict__ tb5, const double* __restri
     fre[idx] = fre[idx] - tb5[idx] - tb6[idx] - tb7[idx] - tb8[idx] + lambda * (tb9[idx] + tba[idx]);
 }
 
-__global__ void Adams(const double* __restrict__ phi_current, const double* __restrict__ phi_previous, double* phi_integral) {
+__global__ void Adams(const double* __restrict__ phi_current, double* phi_previous, double* phi_integral) {
 
     // Local and global arrays use row-major storage
     int global_i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -610,8 +601,12 @@ __global__ void Adams(const double* __restrict__ phi_current, const double* __re
 
     if (global_i >= dev_nx || global_j >= dev_ny) { return; }
 
+    double phi_curr;
+
     for (int i = 0; i < 5; i++) {
-        phi_integral[global_idx] += adams_consts[0] * phi_current[global_idx] - adams_consts[1] * phi_previous[global_idx];
+        phi_curr = phi_current[global_idx];
+        phi_integral[global_idx] += adams_consts[0] * phi_curr - adams_consts[1] * phi_previous[global_idx];
+        phi_previous[global_idx] = phi_curr;
         global_idx += dev_N;
     }
 }
