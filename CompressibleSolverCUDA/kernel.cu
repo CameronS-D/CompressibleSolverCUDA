@@ -150,6 +150,7 @@ int main()
         //auto stop = std::chrono::high_resolution_clock::now();
         //runtimes[i - 1] = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count();
 
+        cudaStreamSynchronize(stream[0]);
         PrintAverages(i, avgArrays);
     }
 
@@ -258,9 +259,8 @@ void Fluxx(double* cylinderMask, double* uVelocity, double* vVelocity, double* t
     double* tb1, double* tb2, double* tb3, double* tb4, double* tb5, double* tb6, double* tb7, double* tb8, double* tb9,
     double* tba, double* tbb, double* fro, double* fru, double* frv, double* fre, double* ftp) {
 
-    cudaStreamSynchronize(stream[0]);
     Derix<1> << < dx_blockGrid, dx_threadGrid, 0, stream[0] >> > (rou, tb1);
-    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[2] >> > (rov, tb2);
+    Deriy<1> << < dy_blockGrid, dy_threadGrid, 0, stream[1] >> > (rov, tb2);
 
     cudaDeviceSynchronize();
     SubFluxx1 << < ceil(nx * ny / 256) + 1, 256, 0, stream[0] >> > (uVelocity, vVelocity, rou, fro, tb1, tb2);
