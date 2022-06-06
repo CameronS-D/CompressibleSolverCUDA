@@ -16,10 +16,11 @@
 const int nx = 4097, ny = nx, nt = 100, N = nx * ny;
 const double oneOverN = 1. / (double)N;
 cudaStream_t stream[6];
-
+#define X_THREADS 32
+#define Y_THREADS 16
 // Kernel launch constants for x-derivative
-const unsigned int dx_threads_x = 1024;
-const unsigned int dx_threads_y = 1;
+const unsigned int dx_threads_x = 512;
+const unsigned int dx_threads_y = 2;
 const unsigned int dx_blocks_x = (unsigned int)ceil((double)nx / dx_threads_x);
 const unsigned int dx_blocks_y = (unsigned int)ceil((double)ny / dx_threads_y);
 const dim3 dx_blockGrid(dx_blocks_x, dx_blocks_y);
@@ -27,8 +28,8 @@ const dim3 dx_threadGrid(dx_threads_x, dx_threads_y);
 
 // Kernel launch constants for y-derivative
 const int ptsPerThrd = 4;
-const unsigned int dy_threads_x = 32;
-const unsigned int dy_threads_y = 32;
+const unsigned int dy_threads_x = X_THREADS;
+const unsigned int dy_threads_y = Y_THREADS;
 const unsigned int dy_blocks_x = (unsigned int)ceil((double)nx / dy_threads_x);
 const unsigned int dy_blocks_y = (unsigned int)ceil((double)ny / ptsPerThrd / dy_threads_y);
 const dim3 dy_blockGrid(dy_blocks_x, dy_blocks_y);
@@ -430,7 +431,7 @@ __global__ void Deriy(const double* __restrict__ f, double* deriv_f) {
     if (global_i >= dev_nx || global_j > dev_ny) { return; }
     if (global_j == dev_ny) { global_idx = global_i; }
 
-    __shared__ double tile_f[(32 * ptsPerThrd + 2) * 32];
+    __shared__ double tile_f[(Y_THREADS * ptsPerThrd + 2) * X_THREADS];
 
     // Apply periodic boundary conditions
     if (threadIdx.y == 0) {
